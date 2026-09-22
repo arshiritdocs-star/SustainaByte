@@ -1,340 +1,509 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+
+from auditor.architectures import (
+    get_candidate_architectures
+)
+
+from auditor.lifecycle_math import (
+    Workload,
+    calculate_lifecycle_impact
+)
+
 from auditor.auth import (
     init_auth_db,
     is_registered,
     register_user,
     request_otp,
     register_and_send_otp,
-    verify_otp,
-)
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-import hashlib
-
-from auditor.architectures import get_architectures
-from auditor.lifecycle_math import (
-    Workload,
-    calculate_lifecycle_impact
+    verify_otp
 )
 
-from auditor.gemini_auditor import run_lifecycle_audit
+from auditor.gemini_auditor import (
+    run_lifecycle_audit
+)
 
 from auditor.sync_engine import (
     init_db,
     is_connected,
     get_pending_audits_count,
     get_all_audits,
-    reconcile_pending_audits,
     save_audit,
-    set_simulated_outage,
+    reconcile_pending_audits,
     start_background_reconciler
 )
 
 
-# ============================================================
+# ==================================================
 # PAGE CONFIGURATION
-# ============================================================
+# ==================================================
 
 st.set_page_config(
     page_title="SustainaByte | Sustainable AI Auditor",
-    page_icon="🌱",
+    page_icon="🍃",
     layout="wide"
 )
+
+
+# ==================================================
+# DATABASE INITIALIZATION
+# ==================================================
+
+init_auth_db()
+init_db()
+
+if "reconciler_started" not in st.session_state:
+
+    start_background_reconciler()
+
+    st.session_state.reconciler_started = True
+
+
+# ==================================================
+# SESSION STATE
+# ==================================================
+
+if "authenticated" not in st.session_state:
+
+    st.session_state.authenticated = False
+
+
+if "user_email" not in st.session_state:
+
+    st.session_state.user_email = ""
+
+
+if "auth_mode" not in st.session_state:
+
+    st.session_state.auth_mode = "Login"
+
+
+if "otp_requested" not in st.session_state:
+
+    st.session_state.otp_requested = False
+
+
+if "registration_otp_requested" not in st.session_state:
+
+    st.session_state.registration_otp_requested = False
+
+
 # ==================================================
 # AUTHENTICATION
 # ==================================================
 
-init_auth_db()
-if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
-
-if "login_email" not in st.session_state:
-    st.session_state["login_email"] = ""
-
-if "otp_sent" not in st.session_state:
-    st.session_state["otp_sent"] = False
-
-if "register_email" not in st.session_state:
-    st.session_state["register_email"] = ""
-
-if "register_otp_sent" not in st.session_state:
-    st.session_state["register_otp_sent"] = False
-
-# ==================================================
-# LOGIN SCREEN
-# ==================================================
-
-if not st.session_state["authenticated"]:
+if not st.session_state.authenticated:
 
     st.title("🍃 SustainaByte")
-    st.subheader("🔐 Secure Authentication")
+
+    st.subheader(
+        "Sustainable AI Lifecycle Auditor"
+    )
+
+    st.write(
+        "Sign in to access the AI lifecycle "
+        "sustainability dashboard."
+    )
+
+    st.divider()
 
     auth_mode = st.radio(
-        "Choose an option",
-        ["Login", "Register"],
+        "Account",
+        [
+            "Login",
+            "Register"
+        ],
         horizontal=True
     )
 
-    # ---------------- REGISTER ----------------
-    if auth_mode == "Register":
+    st.session_state.auth_mode = auth_mode
 
-        st.markdown("### Create your account")
 
-        register_email = st.text_input(
-            "Email Address",
-            placeholder="you@example.com"
-        ).strip().lower()
+    # ==================================================
+    # LOGIN
+    # ==================================================
 
-        if st.button(
-            "📧 Send Registration OTP",
-            use_container_width=True
-        ):
-            if not register_email:
-                st.error("Please enter your email address.")
+    if auth_mode == "Login":
 
-            elif is_registered(register_email):
-                st.error("This email is already registered. Please login.")
+        st.header("🔐 Login")
 
-            else:
-                success, message = register_and_send_otp(
-                    register_email
-                )
-
-                if success:
-                    st.session_state["register_email"] = register_email
-                    st.session_state["register_otp_sent"] = True
-                    st.success("OTP sent to your email.")
-
-                else:
-                    st.error(message)
-
-        if st.session_state.get("register_otp_sent", False):
-
-            st.divider()
-
-            st.markdown("### 🔢 Verify Registration OTP")
-
-            registration_otp = st.text_input(
-                "Enter 6-digit OTP",
-                max_chars=6,
-                type="password",
-                key="registration_otp"
-            )
-
-            if st.button(
-                "✅ Verify & Create Account",
-                use_container_width=True
-            ):
-
-                success, message = verify_otp(
-                    st.session_state["register_email"],
-                    registration_otp
-                )
-
-                if success:
-
-                    register_user(
-                        st.session_state["register_email"]
-                    )
-
-                    st.session_state["register_otp_sent"] = False
-                    st.session_state["otp_sent"] = False
-
-                    st.success(
-                        "Account created successfully! "
-                        "You can now login."
-                    )
-
-                    st.rerun()
-
-                else:
-                    st.error(message)
-
-    # ---------------- LOGIN ----------------
-    else:
-
-        st.markdown("### Login")
-
-        login_email = st.text_input(
-            "Registered Email",
-            placeholder="you@example.com"
-        ).strip().lower()
+        email = st.text_input(
+            "Email address",
+            key="login_email"
+        )
 
         if st.button(
-            "📧 Send Login OTP",
+            "Send Login OTP",
             use_container_width=True
         ):
 
-            if not login_email:
-                st.error("Please enter your email address.")
+            if not email.strip():
 
-            elif not is_registered(login_email):
                 st.error(
-                    "This email is not registered. "
-                    "Please register first."
+                    "Please enter your email address."
+                )
+
+            elif not is_registered(email):
+
+                st.error(
+                    "This email is not registered."
                 )
 
             else:
 
                 success, message = request_otp(
-                    login_email
+                    email
                 )
 
                 if success:
-                    st.session_state["login_email"] = login_email
-                    st.session_state["otp_sent"] = True
-                    st.success("OTP sent to your email.")
+
+                    st.session_state.user_email = (
+                        email.strip().lower()
+                    )
+
+                    st.session_state.otp_requested = True
+
+                    st.success(message)
 
                 else:
+
                     st.error(message)
 
-        if st.session_state.get("otp_sent", False):
 
-            st.divider()
+        if st.session_state.otp_requested:
 
-            st.markdown("### 🔢 Verify Login OTP")
+            st.subheader(
+                "Enter Login OTP"
+            )
 
             login_otp = st.text_input(
-                "Enter 6-digit OTP",
+                "6-digit OTP",
                 max_chars=6,
-                type="password",
                 key="login_otp"
             )
 
             if st.button(
-                "✅ Verify OTP",
+                "Verify Login OTP",
                 use_container_width=True
             ):
 
                 success, message = verify_otp(
-                    st.session_state["login_email"],
+                    st.session_state.user_email,
                     login_otp
                 )
 
                 if success:
 
-                    st.session_state["authenticated"] = True
-                    st.session_state["otp_sent"] = False
+                    st.session_state.authenticated = True
 
-                    st.success("Login successful!")
+                    st.session_state.otp_requested = False
+
+                    st.success(
+                        "Login successful."
+                    )
 
                     st.rerun()
 
                 else:
+
                     st.error(message)
+
+
+    # ==================================================
+    # REGISTRATION
+    # ==================================================
+
+    else:
+
+        st.header("📝 Register")
+
+        email = st.text_input(
+            "Email address",
+            key="register_email"
+        )
+
+        if st.button(
+            "Send Registration OTP",
+            use_container_width=True
+        ):
+
+            if not email.strip():
+
+                st.error(
+                    "Please enter your email address."
+                )
+
+            elif is_registered(email):
+
+                st.error(
+                    "This email is already registered."
+                )
+
+            else:
+
+                success, message = (
+                    register_and_send_otp(
+                        email
+                    )
+                )
+
+                if success:
+
+                    st.session_state.user_email = (
+                        email.strip().lower()
+                    )
+
+                    st.session_state.registration_otp_requested = True
+
+                    st.success(message)
+
+                else:
+
+                    st.error(message)
+
+
+        if st.session_state.registration_otp_requested:
+
+            st.subheader(
+                "Enter Registration OTP"
+            )
+
+            registration_otp = st.text_input(
+                "6-digit OTP",
+                max_chars=6,
+                key="registration_otp"
+            )
+
+            if st.button(
+                "Verify Registration OTP",
+                use_container_width=True
+            ):
+
+                success, message = verify_otp(
+                    st.session_state.user_email,
+                    registration_otp
+                )
+
+                if success:
+
+                    registered = register_user(
+                        st.session_state.user_email
+                    )
+
+                    if registered:
+
+                        st.session_state.authenticated = True
+
+                        st.session_state.registration_otp_requested = False
+
+                        st.success(
+                            "Registration successful."
+                        )
+
+                        st.rerun()
+
+                    else:
+
+                        st.error(
+                            "Registration could not be completed."
+                        )
+
+                else:
+
+                    st.error(message)
+
 
     st.stop()
 
-# ============================================================
-# TITLE
-# ============================================================
 
-st.title("🌱 SustainaByte")
-st.subheader("Sustainable AI Lifecycle Auditor")
+# ==================================================
+# CONSTANTS
+# ==================================================
 
-st.write(
-    "Estimate the energy, carbon, storage, networking, hardware, "
-    "and retraining impact of different AI architectures."
+GRID_CARBON_INTENSITY = 0.45
+
+
+# ==================================================
+# HEADER
+# ==================================================
+
+st.title("🍃 SustainaByte")
+
+st.subheader(
+    "Sustainable AI Lifecycle Auditor"
+)
+
+st.markdown(
+    """
+    Describe what your AI system does and what kind
+    of data it receives. SustainaByte identifies
+    compatible architecture candidates and estimates
+    their lifecycle environmental impact.
+    """
 )
 
 
-# ============================================================
-# OFFLINE LEDGER & SYNC INITIALIZATION
-# ============================================================
+# ==================================================
+# USER INFORMATION
+# ==================================================
 
-if "init_done" not in st.session_state:
-    init_db()
-    start_background_reconciler(interval_sec=5)
-    st.session_state["init_done"] = True
+user_col1, user_col2 = st.columns(
+    [4, 1]
+)
 
+with user_col1:
 
-# ============================================================
-# CONNECTIVITY STATUS
-# ============================================================
-
-st.divider()
-
-# ------------------------------------------------------------
-# Connectivity / offline-demo state
-# ------------------------------------------------------------
-# The toggle is intentionally applied before connectivity checks so the
-# background reconciler and the UI see the same simulated-outage state.
-simulated_outage = st.sidebar.toggle(
-    "Simulate Network Outage",
-    value=False,
-    help=(
-        "Demo mode: disables internet-dependent functionality while "
-        "keeping local sustainability calculations operational."
+    st.caption(
+        f"Signed in as: {st.session_state.user_email}"
     )
-)
 
-set_simulated_outage(simulated_outage)
+with user_col2:
 
-online = is_connected()
-pending_count = get_pending_audits_count()
-
-col_status, col_sync = st.columns([4, 1])
-
-with col_status:
-    if simulated_outage:
-        st.warning(
-            f"🟠 **Simulated Offline Mode** | "
-            f"Local Math Active | Pending: {pending_count}"
-        )
-    elif online:
-        st.success(
-            f"🟢 **System Online** | Gemini Available | "
-            f"Pending: {pending_count}"
-        )
-    else:
-        st.warning(
-            f"🟠 **Network Offline** | Local Math Active | "
-            f"Pending: {pending_count}"
-        )
-
-with col_sync:
     if st.button(
-        "🔄 Force Reconcile",
-        use_container_width=True,
-        disabled=not online,
+        "Logout"
     ):
-        reconciled = reconcile_pending_audits()
-        st.success(f"Reconciled {reconciled} pending audit(s).")
+
+        st.session_state.authenticated = False
+
+        st.session_state.user_email = ""
+
+        st.session_state.otp_requested = False
+
+        st.session_state.registration_otp_requested = False
+
         st.rerun()
 
+
 st.divider()
 
 
-# ============================================================
-# SIDEBAR INPUTS
-# ============================================================
+# ==================================================
+# AI SYSTEM PROFILE
+# ==================================================
 
-st.sidebar.header("⚙️ Workload Parameters")
+st.header(
+    "🤖 Describe Your AI System"
+)
 
-
-requests = st.sidebar.number_input(
-    "Number of Requests",
-    min_value=1,
-    value=100000
+st.write(
+    "Tell SustainaByte what your AI system does "
+    "and what type of data it processes."
 )
 
 
-workload_hours = st.sidebar.number_input(
+task_type = st.selectbox(
+    "What is your AI task?",
+    [
+        "Classification",
+        "Regression",
+        "Image Classification",
+        "Text Classification",
+        "Time-Series Forecasting"
+    ]
+)
+
+
+input_type = st.selectbox(
+    "What type of input data does your AI model receive?",
+    [
+        "Tabular",
+        "Image",
+        "Text",
+        "Time-Series"
+    ]
+)
+
+
+use_case = st.text_area(
+    "Describe your AI system",
+    placeholder=(
+        "Example: Predict house prices using area, "
+        "number of rooms, location and age of the house."
+    ),
+    height=100
+)
+
+
+# ==================================================
+# DATASET CHARACTERISTICS
+# ==================================================
+
+st.subheader(
+    "📊 Dataset Characteristics"
+)
+
+
+dataset_samples = st.number_input(
+    "Number of training samples",
+    min_value=1,
+    value=100000,
+    step=1000
+)
+
+
+if input_type in [
+    "Tabular",
+    "Time-Series"
+]:
+
+    input_features = st.number_input(
+        "Number of input features",
+        min_value=1,
+        value=20,
+        step=1
+    )
+
+else:
+
+    input_features = st.number_input(
+        "Average input size / features",
+        min_value=1,
+        value=100,
+        step=1
+    )
+
+
+dataset_size_gb = st.number_input(
+    "Dataset size (GB)",
+    min_value=0.001,
+    value=1.0,
+    step=0.1
+)
+
+
+# ==================================================
+# USAGE REQUIREMENTS
+# ==================================================
+
+st.subheader(
+    "⚙️ Usage Requirements"
+)
+
+
+requests = st.number_input(
+    "Inference Requests",
+    min_value=1,
+    value=100000,
+    step=1000
+)
+
+
+workload_hours = st.number_input(
     "Workload Hours",
     min_value=0.0,
     value=100.0
 )
 
 
-max_latency = st.sidebar.number_input(
+max_latency = st.number_input(
     "Maximum Latency (ms)",
     min_value=0.0,
     value=80.0
 )
 
 
-min_accuracy = st.sidebar.number_input(
+min_accuracy = st.number_input(
     "Minimum Accuracy (%)",
     min_value=0.0,
     max_value=100.0,
@@ -342,45 +511,179 @@ min_accuracy = st.sidebar.number_input(
 )
 
 
-pue = st.sidebar.number_input(
+retraining_runs = st.number_input(
+    "Retraining Runs per Year",
+    min_value=0,
+    value=4,
+    step=1
+)
+
+
+pue = st.number_input(
     "PUE",
     min_value=1.0,
     value=1.4
 )
 
 
+# ==================================================
+# SIDEBAR NETWORK
+# ==================================================
+
 st.sidebar.divider()
 
-
-# ============================================================
-# CONSTANTS
-# ============================================================
-
-GRID_CARBON_INTENSITY = 0.45
+st.sidebar.header(
+    "🌐 Network"
+)
 
 
-# ============================================================
-# WORKLOAD
-# ============================================================
+simulated_outage = st.sidebar.toggle(
+    "Simulate Network Outage",
+    value=False
+)
+
+
+# ==================================================
+# AI SYSTEM PROFILE DISPLAY
+# ==================================================
+
+st.divider()
+
+st.header(
+    "🤖 AI System Profile"
+)
+
+
+profile_col1, profile_col2, profile_col3 = (
+    st.columns(3)
+)
+
+
+with profile_col1:
+
+    st.metric(
+        "AI Task",
+        task_type
+    )
+
+
+with profile_col2:
+
+    st.metric(
+        "Input Type",
+        input_type
+    )
+
+
+with profile_col3:
+
+    st.metric(
+        "Dataset Size",
+        f"{dataset_size_gb:.2f} GB"
+    )
+
+
+if use_case.strip():
+
+    st.info(
+        f"**Use Case:** {use_case}"
+    )
+
+
+# ==================================================
+# FIND COMPATIBLE ARCHITECTURES
+# ==================================================
+
+architectures = get_candidate_architectures(
+    task_type=task_type,
+    input_type=input_type
+)
+
+
+if len(architectures) == 0:
+
+    st.error(
+        "No architecture in the current prototype "
+        "supports this combination of task and input type."
+    )
+
+    st.info(
+        "Try another task/input combination."
+    )
+
+    st.stop()
+
+
+st.success(
+    f"Found {len(architectures)} suitable "
+    f"architecture(s) for your AI system."
+)
+
+
+# ==================================================
+# NETWORK STATUS
+# ==================================================
+
+if simulated_outage:
+
+    st.warning(
+        "⚠️ Network outage simulation is enabled. "
+        "The lifecycle calculation remains available "
+        "locally."
+    )
+
+else:
+
+    if is_connected():
+
+        st.success(
+            "🌐 Network connection available."
+        )
+
+    else:
+
+        st.warning(
+            "🌐 Network connection unavailable. "
+            "Local audit mode is active."
+        )
+
+
+# ==================================================
+# CREATE WORKLOAD
+# ==================================================
 
 workload = Workload(
-    inference_count=requests,
-    training_hours=workload_hours,
+    inference_count=int(requests),
+
+    training_hours=float(
+        workload_hours
+    ),
+
+    dataset_size_gb=float(
+        dataset_size_gb
+    ),
+
     carbon_intensity_gco2_per_kwh=(
         GRID_CARBON_INTENSITY * 1000
     ),
-    pue=pue,
+
+    pue=float(
+        pue
+    ),
+
+    retraining_runs=int(
+        retraining_runs
+    ),
+
     retraining_training_hours=1.0
 )
 
 
-# ============================================================
-# ARCHITECTURE CALCULATIONS
-# ============================================================
+# ==================================================
+# CALCULATE LIFECYCLE IMPACT
+# ==================================================
 
-architectures = get_architectures()
-
-results = []
+results_list = []
 
 
 for architecture in architectures:
@@ -390,219 +693,128 @@ for architecture in architectures:
         workload=workload
     )
 
-    results.append(
-        {
-            # ========================================================
-            # REQUIRED BY gemini_auditor.py
-            # ========================================================
 
-            "name": architecture.name,
-
-            "latency_ms":
-                architecture.estimated_latency_ms,
-
-            "accuracy":
-                architecture.estimated_accuracy * 100,
-
-            "total_lifecycle_carbon_kg":
-                impact["carbon"]["total_carbon_kg"],
-
-
-            # ========================================================
-            # EXISTING DASHBOARD FIELDS
-            # ========================================================
-
-            "Architecture":
-                architecture.name,
-
-            "Latency (ms)":
-                architecture.estimated_latency_ms,
-
-            "Accuracy (%)":
-                architecture.estimated_accuracy * 100,
-
-            "Inference Energy (kWh)":
-                impact["energy"][
-                    "inference_energy_kwh"
-                ],
-
-            "Inference Carbon (kg)":
-                impact["energy"][
-                    "inference_energy_kwh"
-                ] * GRID_CARBON_INTENSITY,
-
-            "Total Energy (kWh)":
-                impact["energy"][
-                    "total_energy_kwh"
-                ],
-
-            "Operational Carbon (kg)":
-                impact["carbon"][
-                    "operational_carbon_kg"
-                ],
-
-            "Hardware Carbon (kg)":
-                impact["hardware"][
-                    "embodied_carbon_kg"
-                ],
-
-            "Total Carbon (kg)":
-                impact["carbon"][
-                    "total_carbon_kg"
-                ],
-
-            "Storage (GB)":
-                impact["storage"][
-                    "total_storage_gb"
-                ],
-
-            "Networking Energy (kWh)":
-                impact["networking"][
-                    "network_energy_kwh"
-                ],
-
-            "Networking (GB)":
-                impact["networking"][
-                    "total_network_gb"
-                ],
-
-            "Retraining Energy (kWh)":
-                impact["retraining"][
-                    "retraining_energy_kwh"
-                ],
-
-            "Retraining Carbon (kg)":
-                impact["retraining"][
-                    "retraining_carbon_kg"
-                ],
-
-            "Retraining Runs":
-                impact["retraining"][
-                    "retraining_runs"
-                ],
-        }
+    accuracy_percent = (
+        architecture.estimated_accuracy
+        * 100.0
     )
 
 
-df = pd.DataFrame(results)
-
-
-# ============================================================
-# CHECK ARCHITECTURE COUNT
-# ============================================================
-
-if len(df) != 4:
-
-    st.error(
-        f"Expected 4 architectures, but received {len(df)}."
+    latency_ms = (
+        architecture.estimated_latency_ms
     )
 
-    st.stop()
+
+    is_eligible = (
+        latency_ms <= max_latency
+        and accuracy_percent >= min_accuracy
+    )
 
 
-# ============================================================
-# SLA EVALUATION
-# ============================================================
+    results_list.append({
 
-df["Latency OK"] = (
-    df["Latency (ms)"]
-    <= max_latency
-)
+        "Architecture": architecture.name,
 
+        "Latency (ms)": latency_ms,
 
-df["Accuracy OK"] = (
-    df["Accuracy (%)"]
-    >= min_accuracy
-)
+        "Accuracy (%)": accuracy_percent,
 
+        "Eligible": (
+            "Yes"
+            if is_eligible
+            else "No"
+        ),
 
-df["SLA Met"] = (
-    df["Latency OK"]
-    & df["Accuracy OK"]
-)
+        "Hardware Carbon (kg)": (
+            impact[
+                "hardware_carbon_kg"
+            ]
+        ),
 
+        "Inference Energy (kWh)": (
+            impact[
+                "inference_energy_kwh"
+            ]
+        ),
 
-# ============================================================
-# NORMALIZED SUSTAINABILITY SCORE
-# ============================================================
+        "Inference Carbon (kg)": (
+            impact[
+                "inference_carbon_kg"
+            ]
+        ),
 
-def normalize_inverse(series):
+        "Storage (GB-hours)": (
+            impact[
+                "storage_impact_gb_hours"
+            ]
+        ),
 
-    minimum = series.min()
-    maximum = series.max()
+        "Networking Energy (kWh)": (
+            impact[
+                "networking_energy_kwh"
+            ]
+        ),
 
-    if maximum == minimum:
+        "Networking Carbon (kg)": (
+            impact[
+                "networking_carbon_kg"
+            ]
+        ),
 
-        return pd.Series(
-            [100.0] * len(series),
-            index=series.index
+        "Retraining Energy (kWh)": (
+            impact[
+                "retraining_energy_kwh"
+            ]
+        ),
+
+        "Retraining Carbon (kg)": (
+            impact[
+                "retraining_carbon_kg"
+            ]
+        ),
+
+        "Total Energy (kWh)": (
+            impact[
+                "total_energy_kwh"
+            ]
+        ),
+
+        "Total Carbon (kg)": (
+            impact[
+                "total_carbon_kg"
+            ]
         )
-
-    return (
-        100
-        * (maximum - series)
-        / (maximum - minimum)
-    )
+    })
 
 
-energy_score = normalize_inverse(
-    df["Total Energy (kWh)"]
+results_df = pd.DataFrame(
+    results_list
 )
 
 
-carbon_score = normalize_inverse(
-    df["Total Carbon (kg)"]
-)
-
-
-storage_score = normalize_inverse(
-    df["Storage (GB)"]
-)
-
-
-network_score = normalize_inverse(
-    df["Networking (GB)"]
-)
-
-
-retraining_score = normalize_inverse(
-    df["Retraining Carbon (kg)"]
-)
-
-
-latency_score = normalize_inverse(
-    df["Latency (ms)"]
-)
-
-
-df["Sustainability Score"] = (
-    energy_score
-    + carbon_score
-    + storage_score
-    + network_score
-    + retraining_score
-    + latency_score
-) / 6
-
-
-# ============================================================
+# ==================================================
 # SLA SUMMARY
-# ============================================================
+# ==================================================
 
-st.header("📋 SLA Summary")
+st.header(
+    "📋 Enterprise SLA Summary"
+)
 
-col1, col2, col3 = st.columns(3)
+
+sla_col1, sla_col2, sla_col3, sla_col4 = (
+    st.columns(4)
+)
 
 
-with col1:
+with sla_col1:
 
     st.metric(
         "Maximum Latency",
-        f"{max_latency:.1f} ms"
+        f"{max_latency:.0f} ms"
     )
 
 
-with col2:
+with sla_col2:
 
     st.metric(
         "Minimum Accuracy",
@@ -610,528 +822,736 @@ with col2:
     )
 
 
-with col3:
+with sla_col3:
 
     st.metric(
-        "PUE",
-        f"{pue:.2f}"
+        "Total Requests",
+        f"{requests:,}"
     )
 
 
-# ============================================================
+with sla_col4:
+
+    eligible_count = int(
+        (
+            results_df["Eligible"]
+            == "Yes"
+        ).sum()
+    )
+
+    st.metric(
+        "Eligible Architectures",
+        f"{eligible_count}/{len(results_df)}"
+    )
+
+
+# ==================================================
 # ARCHITECTURE COMPARISON
-# ============================================================
+# ==================================================
 
-st.header("🏗️ Architecture Comparison")
+st.divider()
+
+st.header(
+    "🏗️ Architecture Comparison"
+)
+
+
+comparison_columns = [
+    "Architecture",
+    "Latency (ms)",
+    "Accuracy (%)",
+    "Eligible",
+    "Total Energy (kWh)",
+    "Total Carbon (kg)"
+]
 
 
 st.dataframe(
-    df[
-        [
-            "Architecture",
-            "Latency (ms)",
-            "Accuracy (%)",
-            "Inference Energy (kWh)",
-            "Inference Carbon (kg)",
-            "Total Energy (kWh)",
-            "Total Carbon (kg)",
-        ]
-    ],
+    results_df[
+        comparison_columns
+    ].round(3),
+
     use_container_width=True,
+
     hide_index=True
 )
 
 
-st.dataframe(
-    df[
-        [
-            "Architecture",
-            "Storage (GB)",
-            "Networking Energy (kWh)",
-            "Retraining Energy (kWh)",
-            "Hardware Carbon (kg)",
-            "Sustainability Score",
-        ]
-    ],
-    use_container_width=True,
-    hide_index=True
-)
-
-
-# ============================================================
+# ==================================================
 # SLA EVALUATION
-# ============================================================
+# ==================================================
 
-st.header("🎯 SLA Evaluation")
-
-
-st.dataframe(
-    df[
-        [
-            "Architecture",
-            "Latency (ms)",
-            "Accuracy (%)",
-            "Latency OK",
-            "Accuracy OK",
-            "SLA Met",
-        ]
-    ],
-    use_container_width=True,
-    hide_index=True
+st.header(
+    "🔍 SLA Evaluation"
 )
 
 
-# ============================================================
-# SIX PILLARS
-# ============================================================
+for _, row in results_df.iterrows():
 
-st.header("🌱 Six-Pillar Lifecycle Impact")
+    if row["Eligible"] == "Yes":
+
+        st.success(
+            f"✅ {row['Architecture']} "
+            f"satisfies the latency and "
+            f"accuracy requirements."
+        )
+
+    else:
+
+        latency_pass = (
+            row["Latency (ms)"]
+            <= max_latency
+        )
+
+        accuracy_pass = (
+            row["Accuracy (%)"]
+            >= min_accuracy
+        )
+
+        reasons = []
 
 
-st.dataframe(
-    df[
-        [
-            "Architecture",
-            "Total Energy (kWh)",
-            "Total Carbon (kg)",
-            "Storage (GB)",
-        ]
-    ],
-    use_container_width=True,
-    hide_index=True
+        if not latency_pass:
+
+            reasons.append(
+                "latency requirement not met"
+            )
+
+
+        if not accuracy_pass:
+
+            reasons.append(
+                "accuracy requirement not met"
+            )
+
+
+        st.warning(
+            f"⚠️ {row['Architecture']}: "
+            + ", ".join(reasons)
+            + "."
+        )
+
+
+# ==================================================
+# ARCHITECTURE SUMMARY
+# ==================================================
+
+st.divider()
+
+st.header(
+    "🌱 Sustainability Summary"
 )
 
 
-st.dataframe(
-    df[
-        [
-            "Architecture",
-            "Networking (GB)",
-            "Hardware Carbon (kg)",
-            "Retraining Carbon (kg)",
-        ]
-    ],
-    use_container_width=True,
-    hide_index=True
-)
+eligible_df = results_df[
+    results_df["Eligible"] == "Yes"
+].copy()
 
 
-# ============================================================
-# RECOMMENDATION
-# ============================================================
-
-st.header("🌱 Recommendation")
-
-
-eligible = df[df["SLA Met"]]
-
-
-if len(eligible) > 0:
-
-    recommended = eligible.loc[
-        eligible["Sustainability Score"].idxmax()
-    ]
-
-    st.success(
-        f"Recommended Architecture: "
-        f"**{recommended['Architecture']}**"
-    )
-
-    st.write(
-        f"Sustainability Score: "
-        f"**{recommended['Sustainability Score']:.2f}/100**"
-    )
-
-    st.write(
-        f"Total Carbon: "
-        f"**{recommended['Total Carbon (kg)']:.2f} kg CO₂e**"
-    )
-
-else:
+if eligible_df.empty:
 
     st.warning(
         "No architecture satisfies both "
-        "the latency and accuracy constraints."
+        "the latency and accuracy requirements."
+    )
+
+else:
+
+    lowest_carbon = eligible_df[
+        "Total Carbon (kg)"
+    ].min()
+
+    lowest_energy = eligible_df[
+        "Total Energy (kWh)"
+    ].min()
+
+    st.info(
+        f"""
+        **Eligible architecture count:** {len(eligible_df)}
+
+        **Lowest estimated lifecycle carbon among eligible
+        candidates:** {lowest_carbon:.4f} kg CO₂e
+
+        **Lowest estimated lifecycle energy among eligible
+        candidates:** {lowest_energy:.4f} kWh
+
+        These are estimates based on the prototype's
+        architecture and workload assumptions.
+        """
     )
 
 
-# ============================================================
-# GEMINI ECO-NUTRITION LABEL
-# ============================================================
+# ==================================================
+# CHART 1: TOTAL CARBON
+# ==================================================
 
-st.header("🍃 Gemini Eco-Nutrition Label")
+st.header(
+    "📊 Total Carbon Comparison"
+)
 
-audited_models = df[
-    [
-        "name",
-        "accuracy",
-        "latency_ms",
-        "total_lifecycle_carbon_kg"
-    ]
-].to_dict("records")
+
+st.caption(
+    "Unit: kg CO₂e."
+)
+
+
+carbon_chart = px.bar(
+    results_df,
+
+    x="Architecture",
+
+    y="Total Carbon (kg)",
+
+    color="Architecture",
+
+    text_auto=".4f",
+
+    title="Estimated Total Lifecycle Carbon"
+)
+
+
+carbon_chart.update_layout(
+    yaxis_title="Total Carbon (kg CO₂e)",
+
+    xaxis_title="Architecture",
+
+    showlegend=False
+)
+
+
+st.plotly_chart(
+    carbon_chart,
+    use_container_width=True
+)
+
+
+# ==================================================
+# CHART 2: ENERGY BREAKDOWN
+# ==================================================
+
+st.header(
+    "⚡ Energy Consumption Breakdown"
+)
+
+
+energy_columns = [
+    "Inference Energy (kWh)",
+    "Networking Energy (kWh)",
+    "Retraining Energy (kWh)"
+]
+
+
+energy_data = results_df[
+    ["Architecture"] + energy_columns
+]
+
+
+energy_long = energy_data.melt(
+    id_vars="Architecture",
+
+    var_name="Energy Category",
+
+    value_name="Energy (kWh)"
+)
+
+
+energy_chart = px.bar(
+    energy_long,
+
+    x="Architecture",
+
+    y="Energy (kWh)",
+
+    color="Energy Category",
+
+    barmode="group",
+
+    title="Estimated Energy Consumption",
+
+    text_auto=".4f"
+)
+
+
+energy_chart.update_layout(
+    yaxis_title="Energy (kWh)",
+
+    xaxis_title="Architecture"
+)
+
+
+st.plotly_chart(
+    energy_chart,
+    use_container_width=True
+)
+
+
+# ==================================================
+# CHART 3: STORAGE
+# ==================================================
+
+st.header(
+    "💾 Storage Footprint Comparison"
+)
+
+
+storage_chart = px.bar(
+    results_df,
+
+    x="Architecture",
+
+    y="Storage (GB-hours)",
+
+    color="Architecture",
+
+    text_auto=".2f",
+
+    title="Estimated Storage Footprint"
+)
+
+
+storage_chart.update_layout(
+    yaxis_title="Storage (GB-hours)",
+
+    xaxis_title="Architecture",
+
+    showlegend=False
+)
+
+
+st.plotly_chart(
+    storage_chart,
+    use_container_width=True
+)
+
+
+# ==================================================
+# CHART 4: LATENCY VS ACCURACY
+# ==================================================
+
+st.header(
+    "🎯 Latency vs Accuracy"
+)
+
+
+latency_accuracy_chart = px.scatter(
+    results_df,
+
+    x="Latency (ms)",
+
+    y="Accuracy (%)",
+
+    color="Architecture",
+
+    text="Architecture",
+
+    size="Total Carbon (kg)",
+
+    hover_data=[
+        "Eligible",
+        "Total Carbon (kg)",
+        "Total Energy (kWh)"
+    ],
+
+    title="Architecture Performance and SLA Constraints"
+)
+
+
+latency_accuracy_chart.add_vline(
+    x=max_latency,
+
+    line_dash="dash",
+
+    annotation_text="Maximum latency",
+
+    annotation_position="top right"
+)
+
+
+latency_accuracy_chart.add_hline(
+    y=min_accuracy,
+
+    line_dash="dash",
+
+    annotation_text="Minimum accuracy",
+
+    annotation_position="bottom right"
+)
+
+
+latency_accuracy_chart.update_layout(
+    xaxis_title="Latency (ms)",
+
+    yaxis_title="Accuracy (%)",
+
+    yaxis=dict(
+        range=[
+            max(
+                0,
+                results_df[
+                    "Accuracy (%)"
+                ].min() - 5
+            ),
+
+            min(
+                100,
+                results_df[
+                    "Accuracy (%)"
+                ].max() + 5
+            )
+        ]
+    )
+)
+
+
+st.plotly_chart(
+    latency_accuracy_chart,
+    use_container_width=True
+)
+
+
+# ==================================================
+# CHART 5: CARBON COMPONENTS
+# ==================================================
+
+st.header(
+    "🌍 Carbon Component Breakdown"
+)
+
+
+carbon_columns = [
+    "Hardware Carbon (kg)",
+    "Inference Carbon (kg)",
+    "Networking Carbon (kg)",
+    "Retraining Carbon (kg)"
+]
+
+
+carbon_components = results_df[
+    ["Architecture"] + carbon_columns
+]
+
+
+carbon_components_long = (
+    carbon_components.melt(
+        id_vars="Architecture",
+
+        var_name="Carbon Category",
+
+        value_name="Carbon (kg)"
+    )
+)
+
+
+carbon_components_chart = px.bar(
+    carbon_components_long,
+
+    x="Architecture",
+
+    y="Carbon (kg)",
+
+    color="Carbon Category",
+
+    barmode="group",
+
+    title="Estimated Carbon by Lifecycle Component",
+
+    text_auto=".4f"
+)
+
+
+carbon_components_chart.update_layout(
+    yaxis_title="Carbon (kg CO₂e)",
+
+    xaxis_title="Architecture"
+)
+
+
+st.plotly_chart(
+    carbon_components_chart,
+
+    use_container_width=True
+)
+
+
+# ==================================================
+# GEMINI AUDIT
+# ==================================================
+
+st.divider()
+
+st.header(
+    "🧠 AI Sustainability Audit"
+)
 
 
 workload_desc = (
-    f"AI workload with {requests:,} inference requests, "
-    f"{workload_hours} operating hours, "
-    f"PUE {pue}, "
-    f"minimum accuracy requirement of {min_accuracy}%, "
-    f"and maximum latency requirement of {max_latency} ms."
+    f"AI system use case: "
+    f"{use_case if use_case.strip() else 'Not provided'}. "
+
+    f"Task type: {task_type}. "
+
+    f"Input data type: {input_type}. "
+
+    f"Training dataset contains approximately "
+    f"{dataset_samples:,} samples and "
+    f"{input_features:,} input features. "
+
+    f"Dataset size is "
+    f"{dataset_size_gb:.2f} GB. "
+
+    f"The system handles "
+    f"{requests:,} inference requests. "
+
+    f"Operating workload is "
+    f"{workload_hours} hours. "
+
+    f"PUE is {pue}. "
+
+    f"Retraining runs per year: "
+    f"{retraining_runs}. "
+
+    f"Minimum accuracy requirement is "
+    f"{min_accuracy}%. "
+
+    f"Maximum latency requirement is "
+    f"{max_latency} ms."
 )
 
 
-# ------------------------------------------------------------
-# Online Gemini audit OR local offline fallback
-# ------------------------------------------------------------
-# The deterministic lifecycle calculations above are the critical
-# offline function. Gemini is optional and is never allowed to
-# break the local analysis.
-if online:
-    try:
-        audit_result = run_lifecycle_audit(
-            workload_desc=workload_desc,
-            target_acc=min_accuracy,
-            max_lat=max_latency,
-            audited_models=audited_models
-        )
-        audit_source = "gemini"
-        st.success("Gemini audit available.")
-    except Exception as e:
-        audit_result = (
-            "### Local Audit Fallback\n\n"
-            "Gemini could not be reached, so SustainaByte continued "
-            "using the local deterministic lifecycle analysis.\n\n"
-            f"- Requests: {requests:,}\n"
-            f"- Operating hours: {workload_hours}\n"
-            f"- PUE: {pue}\n"
-            f"- Accuracy requirement: {min_accuracy:.1f}%\n"
-            f"- Latency requirement: {max_latency:.1f} ms\n\n"
-            "The architecture metrics and sustainability scores shown "
-            "above were calculated locally."
-        )
-        audit_source = "local_fallback"
-        st.warning("Gemini unavailable. Using local audit fallback.")
-else:
-    audit_result = (
-        "### 🟠 Offline Sustainability Audit\n\n"
-        "**Local analysis is active.** Internet-dependent Gemini auditing "
-        "is temporarily disabled.\n\n"
-        f"- Requests: {requests:,}\n"
-        f"- Operating hours: {workload_hours}\n"
-        f"- PUE: {pue}\n"
-        f"- Accuracy requirement: {min_accuracy:.1f}%\n"
-        f"- Latency requirement: {max_latency:.1f} ms\n\n"
-        "**Critical offline functionality:** energy, carbon, storage, "
-        "networking, hardware, retraining, SLA, and sustainability-score "
-        "calculations continue locally.\n\n"
-        "This audit result has been retained in the local SQLite ledger "
-        "for reconciliation when connectivity returns."
-    )
-    audit_source = "offline"
+audited_models = []
 
 
-# Persist one record for this exact workload/mode. The key prevents
-# Streamlit reruns from creating duplicate audit records.
-audit_key_payload = (
-    f"{audit_source}|{requests}|{workload_hours}|{max_latency}|"
-    f"{min_accuracy}|{pue}|"
-    f"{[(row['name'], round(row['total_lifecycle_carbon_kg'], 8)) for row in audited_models]}"
-)
-audit_key = hashlib.sha256(
-    audit_key_payload.encode("utf-8")
-).hexdigest()
+for _, row in results_df.iterrows():
 
-try:
-    save_audit(
-        audit_text=audit_result,
-        audit_key=audit_key,
-        source=audit_source,
-    )
-except Exception as e:
-    st.warning(f"Could not save audit to the local ledger: {e}")
+    audited_models.append({
 
-st.markdown(audit_result)
+        "architecture": row[
+            "Architecture"
+        ],
 
+        "accuracy": row[
+            "Accuracy (%)"
+        ],
 
-# ============================================================
-# CHARTS
-# ============================================================
+        "latency_ms": row[
+            "Latency (ms)"
+        ],
 
-st.header("📊 Sustainability Analysis")
+        "energy_kwh": row[
+            "Total Energy (kWh)"
+        ],
 
+        "carbon_kg": row[
+            "Total Carbon (kg)"
+        ],
 
-# Use one complete copy for every chart.
-# This prevents accidental slicing of the Transformer
-# or other architectures.
-
-chart_df = df.copy()
+        "storage_gb_hours": row[
+            "Storage (GB-hours)"
+        ]
+    })
 
 
-# ============================================================
-# ENERGY
-# ============================================================
-
-fig_energy = px.bar(
-    chart_df,
-    x="Architecture",
-    y="Total Energy (kWh)",
-    title="Total Energy Consumption"
-)
-
-st.plotly_chart(
-    fig_energy,
+if st.button(
+    "Generate Eco-Nutrition Label",
     use_container_width=True
-)
-
-
-# ============================================================
-# CARBON
-# ============================================================
-
-fig_carbon = px.bar(
-    chart_df,
-    x="Architecture",
-    y="Total Carbon (kg)",
-    title="Total Carbon Impact"
-)
-
-st.plotly_chart(
-    fig_carbon,
-    use_container_width=True
-)
-
-
-# ============================================================
-# LATENCY
-# ============================================================
-
-fig_latency = px.bar(
-    chart_df,
-    x="Architecture",
-    y="Latency (ms)",
-    title="Architecture Latency"
-)
-
-st.plotly_chart(
-    fig_latency,
-    use_container_width=True
-)
-
-
-# ============================================================
-# ACCURACY
-# ============================================================
-
-fig_accuracy = px.bar(
-    chart_df,
-    x="Architecture",
-    y="Accuracy (%)",
-    title="Architecture Accuracy"
-)
-
-st.plotly_chart(
-    fig_accuracy,
-    use_container_width=True
-)
-
-
-# ============================================================
-# NETWORKING
-# ============================================================
-
-fig_network = px.bar(
-    chart_df,
-    x="Architecture",
-    y="Networking Energy (kWh)",
-    title="Networking Energy"
-)
-
-st.plotly_chart(
-    fig_network,
-    use_container_width=True
-)
-
-
-# ============================================================
-# RETRAINING
-# ============================================================
-
-fig_retraining = px.bar(
-    chart_df,
-    x="Architecture",
-    y="Retraining Carbon (kg)",
-    title="Retraining Carbon Impact"
-)
-
-st.plotly_chart(
-    fig_retraining,
-    use_container_width=True
-)
-
-
-# ============================================================
-# ACCURACY VS CARBON
-# ============================================================
-
-fig_tradeoff = px.scatter(
-    chart_df,
-    x="Accuracy (%)",
-    y="Total Carbon (kg)",
-    text="Architecture",
-    size="Sustainability Score",
-    title="Accuracy vs Carbon Impact"
-)
-
-fig_tradeoff.update_traces(
-    textposition="top center"
-)
-
-st.plotly_chart(
-    fig_tradeoff,
-    use_container_width=True
-)
-
-
-# ============================================================
-# SUSTAINABILITY SCORE
-# ============================================================
-
-fig_score = px.bar(
-    chart_df,
-    x="Architecture",
-    y="Sustainability Score",
-    title="Composite Sustainability Score",
-    range_y=[0, 100]
-)
-
-st.plotly_chart(
-    fig_score,
-    use_container_width=True
-)
-
-
-# ============================================================
-# RADAR CHART
-# ============================================================
-
-st.header("🕸️ Lifecycle Sustainability Radar")
-
-
-radar_metrics = [
-    "Energy Efficiency",
-    "Carbon Efficiency",
-    "Storage Efficiency",
-    "Network Efficiency",
-    "Retraining Efficiency",
-    "Latency Efficiency",
-]
-
-
-score_columns = [
-    energy_score,
-    carbon_score,
-    storage_score,
-    network_score,
-    retraining_score,
-    latency_score,
-]
-
-
-fig_radar = go.Figure()
-
-
-for index, architecture in enumerate(
-    chart_df["Architecture"]
 ):
 
-    values = [
-        score_columns[0].iloc[index],
-        score_columns[1].iloc[index],
-        score_columns[2].iloc[index],
-        score_columns[3].iloc[index],
-        score_columns[4].iloc[index],
-        score_columns[5].iloc[index],
-    ]
+    audit_text = run_lifecycle_audit(
+        workload_desc=workload_desc,
 
-    values.append(values[0])
+        target_acc=min_accuracy,
 
-    categories = radar_metrics + [
-        radar_metrics[0]
-    ]
+        max_lat=max_latency,
 
-    fig_radar.add_trace(
-        go.Scatterpolar(
-            r=values,
-            theta=categories,
-            fill="toself",
-            name=architecture
-        )
+        audited_models=audited_models
     )
 
 
-fig_radar.update_layout(
-    polar=dict(
-        radialaxis=dict(
-            visible=True,
-            range=[0, 100]
-        )
-    ),
-    title="Architecture Lifecycle Sustainability Profile",
-    showlegend=True,
-    legend=dict(
-        title="Architecture",
-        orientation="v",
-        x=1.02,
-        y=1
+    st.session_state.audit_text = (
+        audit_text
     )
+
+    save_audit(
+        audit_text
+    )
+
+
+if "audit_text" in st.session_state:
+
+    st.markdown(
+        st.session_state.audit_text
+    )
+
+
+# ==================================================
+# AUDIT HISTORY
+# ==================================================
+
+st.divider()
+
+st.header(
+    "📚 Audit History"
 )
 
 
-st.plotly_chart(
-    fig_radar,
-    use_container_width=True
+pending_count = (
+    get_pending_audits_count()
 )
 
 
-# ============================================================
-# OFFLINE AUDIT HISTORY
-# ============================================================
+history_col1, history_col2 = (
+    st.columns(2)
+)
 
-st.header("🗃️ Offline Audit Ledger")
 
-try:
-    audit_history = get_all_audits()
+with history_col1:
 
-    if audit_history:
-        history_df = pd.DataFrame(
-            audit_history,
-            columns=[
-                "ID",
-                "Created At",
-                "Status",
-                "Source",
-                "Reconciled At",
-                "Audit Text",
-            ],
-        )
+    st.metric(
+        "Pending Local Audits",
+        pending_count
+    )
 
-        st.dataframe(
-            history_df,
-            use_container_width=True,
-            hide_index=True,
-        )
 
-        pending_now = get_pending_audits_count()
-        if pending_now:
-            st.warning(
-                f"{pending_now} audit(s) are waiting for reconciliation."
-            )
-        else:
-            st.success(
-                "All locally retained audits have been reconciled."
-            )
-    else:
-        st.info("No audit records are currently stored.")
+with history_col2:
 
-except Exception as e:
-    st.info(f"Audit ledger unavailable: {e}")
+    connection_status = (
+        "Online"
+        if is_connected()
+        else "Offline"
+    )
+
+    st.metric(
+        "Connection",
+        connection_status
+    )
+
+
+if st.button(
+    "Sync Pending Audits"
+):
+
+    reconcile_pending_audits()
+
+    st.success(
+        "Audit synchronization attempted."
+    )
+
+    st.rerun()
+
+
+audit_history = get_all_audits()
+
+
+if audit_history:
+
+    history_df = pd.DataFrame(
+        audit_history,
+
+        columns=[
+            "ID",
+            "Created At",
+            "Status",
+            "Audit"
+        ]
+    )
+
+    st.dataframe(
+        history_df,
+
+        use_container_width=True,
+
+        hide_index=True
+    )
+
+else:
+
+    st.info(
+        "No audit history available yet."
+    )
+
+
+# ==================================================
+# DETAILED RESULTS
+# ==================================================
+
+st.divider()
+
+st.header(
+    "📄 Detailed Calculation Results"
+)
+
+
+with st.expander(
+    "View detailed calculation results"
+):
+
+    st.dataframe(
+        results_df.round(4),
+
+        use_container_width=True,
+
+        hide_index=True
+    )
+
+
+    csv_data = (
+        results_df
+        .to_csv(index=False)
+        .encode("utf-8")
+    )
+
+
+    st.download_button(
+        label="⬇️ Download Results as CSV",
+
+        data=csv_data,
+
+        file_name=(
+            "sustainabyte_results.csv"
+        ),
+
+        mime="text/csv"
+    )
+
+
+# ==================================================
+# ASSUMPTIONS
+# ==================================================
+
+st.divider()
+
+st.header(
+    "ℹ️ Assumptions and Limitations"
+)
+
+
+st.markdown(
+    f"""
+    - Grid carbon intensity:
+      **{GRID_CARBON_INTENSITY} kg CO₂e/kWh**.
+    - PUE is a user-controlled scenario input.
+    - Architecture specifications are illustrative
+      prototype values.
+    - Energy and carbon values are estimates, not
+      direct measurements.
+    - Estimated accuracy values are architecture
+      presets and are not produced by training a model
+      on the user's dataset.
+    - Dataset sample count and feature count are used
+      to characterize the workload and provide context
+      to the audit.
+    - Storage is reported in GB-hours.
+    - The current prototype supports a limited set of
+      architecture candidates.
+    - Gemini analysis is optional and can operate in
+      local debug mode.
+    """
+)
+
+
+st.caption(
+    """
+    SustainaByte | Sustainable AI Lifecycle Auditor
+    | Hackathon Prototype
+    """
+)
