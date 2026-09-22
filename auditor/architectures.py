@@ -48,12 +48,63 @@ class Architecture:
         return self.retraining_frequency
 
 
-LOGISTIC_REGRESSION: Final = Architecture("Logistic Regression / Linear Model", "linear", 1_000, 0.05, 0.78, 2.0, 1.0, 1.0, 16.0, 12, "cpu")
-SMALL_RANDOM_FOREST: Final = Architecture("Small Random Forest", "tree_ensemble", 50_000, 5.0, 0.85, 8.0, 5.0, 3.0, 128.0, 6, "cpu")
-SMALL_CNN: Final = Architecture("Small CNN", "cnn", 2_000_000, 8.0, 0.91, 25.0, 50.0, 15.0, 512.0, 4, "small_gpu")
-SMALL_TRANSFORMER: Final = Architecture("Small Transformer", "transformer", 25_000_000, 100.0, 0.94, 60.0, 400.0, 80.0, 4_096.0, 2, "large_gpu")
+CLOUD_MONOLITH: Final = Architecture(
+    name="Cloud Monolith 70B FP16", 
+    model_type="transformer", 
+    parameter_count=70_000_000_000, 
+    model_size_mb=140_000.0, 
+    estimated_accuracy=0.942, 
+    estimated_latency_ms=185.0, 
+    training_compute=10000.0, 
+    inference_compute=500.0, 
+    memory_requirement_mb=160_000.0, 
+    retraining_frequency=12, 
+    hardware_requirement="multi_gpu"
+)
 
-ARCHITECTURES: Final[Tuple[Architecture, ...]] = (LOGISTIC_REGRESSION, SMALL_RANDOM_FOREST, SMALL_CNN, SMALL_TRANSFORMER)
+QUANTIZED_LORA: Final = Architecture(
+    name="Quantized Core 8B INT4 + LoRA", 
+    model_type="transformer_lora", 
+    parameter_count=8_000_000_000, 
+    model_size_mb=5_000.0, 
+    estimated_accuracy=0.911, 
+    estimated_latency_ms=42.0, 
+    training_compute=50.0,       # Significantly lower due to LoRA
+    inference_compute=80.0, 
+    memory_requirement_mb=8_192.0, 
+    retraining_frequency=12, 
+    hardware_requirement="single_gpu"
+)
+
+DISTILLED_CORE: Final = Architecture(
+    name="Distilled 1.5B INT8", 
+    model_type="transformer", 
+    parameter_count=1_500_000_000, 
+    model_size_mb=2_000.0, 
+    estimated_accuracy=0.84, 
+    estimated_latency_ms=22.0, 
+    training_compute=20.0, 
+    inference_compute=25.0, 
+    memory_requirement_mb=4_096.0, 
+    retraining_frequency=4, 
+    hardware_requirement="small_gpu"
+)
+
+EDGE_MICRO: Final = Architecture(
+    name="Edge Micro 0.5B ONNX", 
+    model_type="tiny_transformer", 
+    parameter_count=500_000_000, 
+    model_size_mb=500.0, 
+    estimated_accuracy=0.785, 
+    estimated_latency_ms=12.0, 
+    training_compute=10.0, 
+    inference_compute=5.0, 
+    memory_requirement_mb=1_024.0, 
+    retraining_frequency=2, 
+    hardware_requirement="npu"
+)
+
+ARCHITECTURES: Final[Tuple[Architecture, ...]] = (CLOUD_MONOLITH, QUANTIZED_LORA, DISTILLED_CORE, EDGE_MICRO)
 
 
 def get_architectures() -> Tuple[Architecture, ...]:
