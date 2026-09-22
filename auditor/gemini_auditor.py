@@ -28,7 +28,10 @@ print(f"[DEBUG] GEMINI_API_KEY_BACKUP loaded: {'YES (non-empty)' if _api_key_bac
 print(f"[DEBUG] Model target: gemini-3.5-flash-lite")
 print(f"[DEBUG] DEBUG_MODE: {DEBUG_MODE}")
 
-client = genai.Client()
+client = None
+
+if not DEBUG_MODE:
+    client = genai.Client()
 
 # ── Fake response for DEBUG_MODE ─────────────────────────────────────────────
 _FAKE_GEMINI_RESPONSE = """\
