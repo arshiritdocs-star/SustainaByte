@@ -9,6 +9,17 @@ from auditor.lifecycle_math import (
     calculate_lifecycle_impact
 )
 
+from auditor.gemini_auditor import run_lifecycle_audit
+
+from auditor.sync_engine import (
+    init_db,
+    is_connected,
+    get_pending_audits_count,
+    get_all_audits,
+    reconcile_pending_audits,
+    start_background_reconciler
+)
+
 
 # ============================================================
 # PAGE CONFIGURATION
@@ -35,10 +46,60 @@ st.write(
 
 
 # ============================================================
+# OFFLINE LEDGER & SYNC INITIALIZATION
+# ============================================================
+
+if "init_done" not in st.session_state:
+    init_db()
+    start_background_reconciler(interval_sec=5)
+    st.session_state["init_done"] = True
+
+
+# ============================================================
+# CONNECTIVITY STATUS
+# ============================================================
+
+st.divider()
+
+col_status, col_sync = st.columns([4, 1])
+
+with col_status:
+
+    if is_connected():
+
+        st.success(
+            f"🟢 *System Online* | Cloud Gemini Active | "
+            f"Queue: {get_pending_audits_count()}"
+        )
+
+    else:
+
+        st.warning(
+            f"🟠 *Network Offline* | Local Math Active | "
+            f"Unsynced: {get_pending_audits_count()}"
+        )
+
+
+with col_sync:
+
+    if st.button(
+        "🔄 Force Sync",
+        use_container_width=True
+    ):
+
+        reconcile_pending_audits()
+        st.rerun()
+
+
+st.divider()
+
+
+# ============================================================
 # SIDEBAR INPUTS
 # ============================================================
 
 st.sidebar.header("⚙️ Workload Parameters")
+
 
 requests = st.sidebar.number_input(
     "Number of Requests",
@@ -46,17 +107,20 @@ requests = st.sidebar.number_input(
     value=100000
 )
 
+
 workload_hours = st.sidebar.number_input(
     "Workload Hours",
     min_value=0.0,
     value=100.0
 )
 
+
 max_latency = st.sidebar.number_input(
     "Maximum Latency (ms)",
     min_value=0.0,
     value=80.0
 )
+
 
 min_accuracy = st.sidebar.number_input(
     "Minimum Accuracy (%)",
@@ -65,10 +129,19 @@ min_accuracy = st.sidebar.number_input(
     value=88.0
 )
 
+
 pue = st.sidebar.number_input(
     "PUE",
     min_value=1.0,
     value=1.4
+)
+
+
+st.sidebar.divider()
+
+simulated_outage = st.sidebar.toggle(
+    "Simulate Network Outage",
+    value=False
 )
 
 
@@ -89,7 +162,8 @@ workload = Workload(
     carbon_intensity_gco2_per_kwh=(
         GRID_CARBON_INTENSITY * 1000
     ),
-    pue=pue
+    pue=pue,
+    retraining_training_hours=1.0
 )
 
 
@@ -101,6 +175,7 @@ architectures = get_architectures()
 
 results = []
 
+
 for architecture in architectures:
 
     impact = calculate_lifecycle_impact(
@@ -110,7 +185,28 @@ for architecture in architectures:
 
     results.append(
         {
-            "Architecture": architecture.name,
+            # ========================================================
+            # REQUIRED BY gemini_auditor.py
+            # ========================================================
+
+            "name": architecture.name,
+
+            "latency_ms":
+                architecture.estimated_latency_ms,
+
+            "accuracy":
+                architecture.estimated_accuracy * 100,
+
+            "total_lifecycle_carbon_kg":
+                impact["carbon"]["total_carbon_kg"],
+
+
+            # ========================================================
+            # EXISTING DASHBOARD FIELDS
+            # ========================================================
+
+            "Architecture":
+                architecture.name,
 
             "Latency (ms)":
                 architecture.estimated_latency_ms,
@@ -185,6 +281,19 @@ df = pd.DataFrame(results)
 
 
 # ============================================================
+# CHECK ARCHITECTURE COUNT
+# ============================================================
+
+if len(df) != 4:
+
+    st.error(
+        f"Expected 4 architectures, but received {len(df)}."
+    )
+
+    st.stop()
+
+
+# ============================================================
 # SLA EVALUATION
 # ============================================================
 
@@ -193,10 +302,12 @@ df["Latency OK"] = (
     <= max_latency
 )
 
+
 df["Accuracy OK"] = (
     df["Accuracy (%)"]
     >= min_accuracy
 )
+
 
 df["SLA Met"] = (
     df["Latency OK"]
@@ -214,6 +325,7 @@ def normalize_inverse(series):
     maximum = series.max()
 
     if maximum == minimum:
+
         return pd.Series(
             [100.0] * len(series),
             index=series.index
@@ -230,21 +342,26 @@ energy_score = normalize_inverse(
     df["Total Energy (kWh)"]
 )
 
+
 carbon_score = normalize_inverse(
     df["Total Carbon (kg)"]
 )
+
 
 storage_score = normalize_inverse(
     df["Storage (GB)"]
 )
 
+
 network_score = normalize_inverse(
     df["Networking (GB)"]
 )
 
+
 retraining_score = normalize_inverse(
     df["Retraining Carbon (kg)"]
 )
+
 
 latency_score = normalize_inverse(
     df["Latency (ms)"]
@@ -269,6 +386,7 @@ st.header("📋 SLA Summary")
 
 col1, col2, col3 = st.columns(3)
 
+
 with col1:
 
     st.metric(
@@ -276,12 +394,14 @@ with col1:
         f"{max_latency:.1f} ms"
     )
 
+
 with col2:
 
     st.metric(
         "Minimum Accuracy",
         f"{min_accuracy:.1f}%"
     )
+
 
 with col3:
 
@@ -297,6 +417,7 @@ with col3:
 
 st.header("🏗️ Architecture Comparison")
 
+
 st.dataframe(
     df[
         [
@@ -307,6 +428,17 @@ st.dataframe(
             "Inference Carbon (kg)",
             "Total Energy (kWh)",
             "Total Carbon (kg)",
+        ]
+    ],
+    use_container_width=True,
+    hide_index=True
+)
+
+
+st.dataframe(
+    df[
+        [
+            "Architecture",
             "Storage (GB)",
             "Networking Energy (kWh)",
             "Retraining Energy (kWh)",
@@ -324,6 +456,7 @@ st.dataframe(
 # ============================================================
 
 st.header("🎯 SLA Evaluation")
+
 
 st.dataframe(
     df[
@@ -347,6 +480,7 @@ st.dataframe(
 
 st.header("🌱 Six-Pillar Lifecycle Impact")
 
+
 st.dataframe(
     df[
         [
@@ -354,6 +488,17 @@ st.dataframe(
             "Total Energy (kWh)",
             "Total Carbon (kg)",
             "Storage (GB)",
+        ]
+    ],
+    use_container_width=True,
+    hide_index=True
+)
+
+
+st.dataframe(
+    df[
+        [
+            "Architecture",
             "Networking (GB)",
             "Hardware Carbon (kg)",
             "Retraining Carbon (kg)",
@@ -370,7 +515,9 @@ st.dataframe(
 
 st.header("🌱 Recommendation")
 
+
 eligible = df[df["SLA Met"]]
+
 
 if len(eligible) > 0:
 
@@ -402,10 +549,54 @@ else:
 
 
 # ============================================================
+# GEMINI ECO-NUTRITION LABEL
+# ============================================================
+
+st.header("🍃 Gemini Eco-Nutrition Label")
+
+
+audited_models = df[
+    [
+        "name",
+        "accuracy",
+        "latency_ms",
+        "total_lifecycle_carbon_kg"
+    ]
+].to_dict("records")
+
+
+workload_desc = (
+    f"AI workload with {requests:,} inference requests, "
+    f"{workload_hours} operating hours, "
+    f"PUE {pue}, "
+    f"minimum accuracy requirement of {min_accuracy}%, "
+    f"and maximum latency requirement of {max_latency} ms."
+)
+
+
+audit_result = run_lifecycle_audit(
+    workload_desc=workload_desc,
+    target_acc=min_accuracy,
+    max_lat=max_latency,
+    audited_models=audited_models
+)
+
+
+st.markdown(audit_result)
+
+
+# ============================================================
 # CHARTS
 # ============================================================
 
 st.header("📊 Sustainability Analysis")
+
+
+# Use one complete copy for every chart.
+# This prevents accidental slicing of the Transformer
+# or other architectures.
+
+chart_df = df.copy()
 
 
 # ============================================================
@@ -413,7 +604,7 @@ st.header("📊 Sustainability Analysis")
 # ============================================================
 
 fig_energy = px.bar(
-    df,
+    chart_df,
     x="Architecture",
     y="Total Energy (kWh)",
     title="Total Energy Consumption"
@@ -430,7 +621,7 @@ st.plotly_chart(
 # ============================================================
 
 fig_carbon = px.bar(
-    df,
+    chart_df,
     x="Architecture",
     y="Total Carbon (kg)",
     title="Total Carbon Impact"
@@ -447,7 +638,7 @@ st.plotly_chart(
 # ============================================================
 
 fig_latency = px.bar(
-    df,
+    chart_df,
     x="Architecture",
     y="Latency (ms)",
     title="Architecture Latency"
@@ -464,7 +655,7 @@ st.plotly_chart(
 # ============================================================
 
 fig_accuracy = px.bar(
-    df,
+    chart_df,
     x="Architecture",
     y="Accuracy (%)",
     title="Architecture Accuracy"
@@ -481,7 +672,7 @@ st.plotly_chart(
 # ============================================================
 
 fig_network = px.bar(
-    df,
+    chart_df,
     x="Architecture",
     y="Networking Energy (kWh)",
     title="Networking Energy"
@@ -498,7 +689,7 @@ st.plotly_chart(
 # ============================================================
 
 fig_retraining = px.bar(
-    df,
+    chart_df,
     x="Architecture",
     y="Retraining Carbon (kg)",
     title="Retraining Carbon Impact"
@@ -515,7 +706,7 @@ st.plotly_chart(
 # ============================================================
 
 fig_tradeoff = px.scatter(
-    df,
+    chart_df,
     x="Accuracy (%)",
     y="Total Carbon (kg)",
     text="Architecture",
@@ -538,7 +729,7 @@ st.plotly_chart(
 # ============================================================
 
 fig_score = px.bar(
-    df,
+    chart_df,
     x="Architecture",
     y="Sustainability Score",
     title="Composite Sustainability Score",
@@ -557,6 +748,7 @@ st.plotly_chart(
 
 st.header("🕸️ Lifecycle Sustainability Radar")
 
+
 radar_metrics = [
     "Energy Efficiency",
     "Carbon Efficiency",
@@ -565,6 +757,7 @@ radar_metrics = [
     "Retraining Efficiency",
     "Latency Efficiency",
 ]
+
 
 score_columns = [
     energy_score,
@@ -575,10 +768,12 @@ score_columns = [
     latency_score,
 ]
 
+
 fig_radar = go.Figure()
 
+
 for index, architecture in enumerate(
-    df["Architecture"]
+    chart_df["Architecture"]
 ):
 
     values = [
@@ -605,6 +800,7 @@ for index, architecture in enumerate(
         )
     )
 
+
 fig_radar.update_layout(
     polar=dict(
         radialaxis=dict(
@@ -612,10 +808,50 @@ fig_radar.update_layout(
             range=[0, 100]
         )
     ),
-    title="Architecture Lifecycle Sustainability Profile"
+    title="Architecture Lifecycle Sustainability Profile",
+    showlegend=True,
+    legend=dict(
+        title="Architecture",
+        orientation="v",
+        x=1.02,
+        y=1
+    )
 )
+
 
 st.plotly_chart(
     fig_radar,
     use_container_width=True
 )
+
+
+# ============================================================
+# OFFLINE AUDIT HISTORY
+# ============================================================
+
+st.header("🗃️ Offline Audit Ledger")
+
+
+try:
+
+    audit_history = get_all_audits()
+
+    if audit_history:
+
+        st.dataframe(
+            pd.DataFrame(audit_history),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    else:
+
+        st.info(
+            "No audit records are currently stored."
+        )
+
+except Exception as e:
+
+    st.info(
+        f"Audit ledger unavailable: {e}"
+    )
