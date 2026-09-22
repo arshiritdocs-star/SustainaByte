@@ -1,5 +1,5 @@
 """
-Architecture definitions for the Sustainable AI Auditor.
+Architecture definitions for the Sustainable AI Lifecycle Auditor.
 """
 
 from dataclasses import dataclass
@@ -23,10 +23,10 @@ class Architecture:
     retraining_frequency: int
     hardware_requirement: str
 
-    # Types of AI problems this architecture can be used for.
+    # AI tasks supported by this architecture.
     supported_tasks: Tuple[str, ...] = ()
 
-    # Types of input data this architecture can process.
+    # Input data types supported by this architecture.
     supported_input_types: Tuple[str, ...] = ()
 
 
@@ -140,12 +140,16 @@ ARCHITECTURES: Final[Tuple[Architecture, ...]] = (
 
 
 def get_architectures() -> Tuple[Architecture, ...]:
-    """Return all architecture presets."""
+    """
+    Return all architecture presets.
+    """
     return ARCHITECTURES
 
 
 def get_architecture_by_name(name: str) -> Architecture:
-    """Return an architecture by its display name."""
+    """
+    Return an architecture by its display name.
+    """
 
     for architecture in ARCHITECTURES:
 
@@ -162,7 +166,7 @@ def get_candidate_architectures(
     input_type: str
 ) -> Tuple[Architecture, ...]:
     """
-    Return architectures suitable for the user's
+    Return architectures suitable for the selected
     AI task and input data type.
     """
 
