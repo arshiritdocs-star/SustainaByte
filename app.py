@@ -1,6 +1,3 @@
-
-# app.py
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -127,7 +124,7 @@ architectures = get_architectures()
 results_list = []
 
 
-for name, architecture in architectures.items():
+for architecture in architectures:
 
     impact = calculate_lifecycle_impact(
         architecture=architecture,
@@ -137,8 +134,8 @@ for name, architecture in architectures.items():
     )
 
     is_eligible = (
-        architecture["latency_ms"] <= maximum_latency
-        and architecture["accuracy"] >= minimum_accuracy
+        architecture.estimated_latency_ms <= maximum_latency
+        and architecture.estimated_accuracy * 100 >= minimum_accuracy
     )
 
     # Convert networking and retraining energy to carbon.
@@ -154,11 +151,11 @@ for name, architecture in architectures.items():
 
     results_list.append({
 
-        "Architecture": name,
+        "Architecture": architecture.name,
 
-        "Latency (ms)": architecture["latency_ms"],
+        "Latency (ms)": architecture.estimated_latency_ms,
 
-        "Accuracy (%)": architecture["accuracy"],
+        "Accuracy (%)": architecture.estimated_accuracy * 100,
 
         "Eligible": "Yes" if is_eligible else "No",
 
@@ -361,14 +358,12 @@ else:
         st.columns(3)
     )
 
-
     with recommendation_col1:
 
         st.metric(
             "Architecture",
             recommended_name
         )
-
 
     with recommendation_col2:
 
@@ -377,14 +372,12 @@ else:
             f"{recommended_row['Total Carbon (kg)']:.2f} kg"
         )
 
-
     with recommendation_col3:
 
         st.metric(
             "Estimated Energy",
             f"{recommended_row['Total Energy (kWh)']:.2f} kWh"
         )
-
 
     st.info(
         f"""
@@ -663,7 +656,6 @@ with st.expander("View detailed calculation results"):
         use_container_width=True,
         hide_index=True
     )
-
 
     csv_data = results_df.to_csv(index=False).encode("utf-8")
 
