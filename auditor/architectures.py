@@ -23,6 +23,12 @@ class Architecture:
     retraining_frequency: int
     hardware_requirement: str
 
+    # Types of AI problems this architecture can be used for.
+    supported_tasks: Tuple[str, ...] = ()
+
+    # Types of input data this architecture can process.
+    supported_input_types: Tuple[str, ...] = ()
+
 
 LOGISTIC_REGRESSION = Architecture(
     name="Logistic Regression / Linear Model",
@@ -36,6 +42,18 @@ LOGISTIC_REGRESSION = Architecture(
     memory_requirement_mb=16.0,
     retraining_frequency=12,
     hardware_requirement="cpu",
+
+    supported_tasks=(
+        "Classification",
+        "Regression",
+        "Time-Series Forecasting",
+    ),
+
+    supported_input_types=(
+        "Tabular",
+        "Time-Series",
+        "Text",
+    ),
 )
 
 
@@ -51,6 +69,17 @@ SMALL_RANDOM_FOREST = Architecture(
     memory_requirement_mb=128.0,
     retraining_frequency=6,
     hardware_requirement="cpu",
+
+    supported_tasks=(
+        "Classification",
+        "Regression",
+        "Time-Series Forecasting",
+    ),
+
+    supported_input_types=(
+        "Tabular",
+        "Time-Series",
+    ),
 )
 
 
@@ -66,6 +95,14 @@ SMALL_CNN = Architecture(
     memory_requirement_mb=512.0,
     retraining_frequency=4,
     hardware_requirement="small_gpu",
+
+    supported_tasks=(
+        "Image Classification",
+    ),
+
+    supported_input_types=(
+        "Image",
+    ),
 )
 
 
@@ -81,6 +118,16 @@ SMALL_TRANSFORMER = Architecture(
     memory_requirement_mb=4_096.0,
     retraining_frequency=2,
     hardware_requirement="large_gpu",
+
+    supported_tasks=(
+        "Text Classification",
+        "Time-Series Forecasting",
+    ),
+
+    supported_input_types=(
+        "Text",
+        "Time-Series",
+    ),
 )
 
 
@@ -93,14 +140,40 @@ ARCHITECTURES: Final[Tuple[Architecture, ...]] = (
 
 
 def get_architectures() -> Tuple[Architecture, ...]:
-    """Return all four architecture presets."""
+    """Return all architecture presets."""
     return ARCHITECTURES
 
 
 def get_architecture_by_name(name: str) -> Architecture:
     """Return an architecture by its display name."""
+
     for architecture in ARCHITECTURES:
+
         if architecture.name == name:
             return architecture
 
-    raise ValueError(f"Unknown architecture: {name}")
+    raise ValueError(
+        f"Unknown architecture: {name}"
+    )
+
+
+def get_candidate_architectures(
+    task_type: str,
+    input_type: str
+) -> Tuple[Architecture, ...]:
+    """
+    Return architectures suitable for the user's
+    AI task and input data type.
+    """
+
+    candidates = []
+
+    for architecture in ARCHITECTURES:
+
+        if (
+            task_type in architecture.supported_tasks
+            and input_type in architecture.supported_input_types
+        ):
+            candidates.append(architecture)
+
+    return tuple(candidates)
