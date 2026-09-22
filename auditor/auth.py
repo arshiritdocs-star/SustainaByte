@@ -1,76 +1,115 @@
+"""
+Email OTP authentication for SustainaByte.
+"""
+
 import hashlib
+import os
 import secrets
 import smtplib
 import sqlite3
 import time
+
 from email.message import EmailMessage
 from pathlib import Path
 
-import streamlit as st
 
-
-DB_PATH = Path(__file__).resolve().parent / "users.db"
+DB_PATH = (
+    Path(__file__).resolve().parent
+    / "auth.db"
+)
 
 OTP_EXPIRY_SECONDS = 300
 MAX_OTP_ATTEMPTS = 5
 
 
 def init_auth_db():
-    """Create authentication tables."""
+    """
+    Create authentication tables if they do not exist.
+    """
 
     connection = sqlite3.connect(DB_PATH)
+
     cursor = connection.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
-            email TEXT PRIMARY KEY,
-            created_at REAL NOT NULL
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)
+        """
+    )
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS otp_requests (
             email TEXT PRIMARY KEY,
             otp_hash TEXT NOT NULL,
             expires_at REAL NOT NULL,
             attempts INTEGER DEFAULT 0
         )
-    """)
-
-    connection.commit()
-    connection.close()
-
-
-def register_user(email):
-    """Register an email address."""
-
-    email = email.strip().lower()
-
-    connection = sqlite3.connect(DB_PATH)
-    cursor = connection.cursor()
-
-    cursor.execute(
         """
-        INSERT OR IGNORE INTO users (email, created_at)
-        VALUES (?, ?)
-        """,
-        (email, time.time())
     )
 
     connection.commit()
     connection.close()
 
 
+def register_user(email):
+    """
+    Register a verified email address.
+    """
+
+    email = email.strip().lower()
+
+    if not email:
+        return False
+
+    connection = sqlite3.connect(DB_PATH)
+
+    cursor = connection.cursor()
+
+    try:
+
+        cursor.execute(
+            """
+            INSERT INTO users (email)
+            VALUES (?)
+            """,
+            (email,)
+        )
+
+        connection.commit()
+
+        return True
+
+    except sqlite3.IntegrityError:
+
+        return False
+
+    finally:
+
+        connection.close()
+
+
 def is_registered(email):
-    """Check whether an email is registered."""
+    """
+    Check whether an email is registered.
+    """
 
     email = email.strip().lower()
 
     connection = sqlite3.connect(DB_PATH)
+
     cursor = connection.cursor()
 
     cursor.execute(
-        "SELECT email FROM users WHERE email = ?",
+        """
+        SELECT 1
+        FROM users
+        WHERE email = ?
+        """,
         (email,)
     )
 
@@ -82,7 +121,9 @@ def is_registered(email):
 
 
 def _hash_otp(otp):
-    """Hash OTP before storing it."""
+    """
+    Hash an OTP before storing it.
+    """
 
     return hashlib.sha256(
         otp.encode("utf-8")
@@ -90,89 +131,178 @@ def _hash_otp(otp):
 
 
 def generate_otp():
-    """Generate a cryptographically secure 6-digit OTP."""
+    """
+    Generate a six-digit OTP.
+    """
 
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
 def send_otp_email(email, otp):
-    """Send OTP through SMTP."""
+    """
+    Send OTP through SMTP.
 
-    smtp_host = st.secrets["SMTP_HOST"]
-    smtp_port = int(st.secrets["SMTP_PORT"])
-    smtp_username = st.secrets["SMTP_USERNAME"]
-    smtp_password = st.secrets["SMTP_PASSWORD"]
+    SMTP configuration is read from environment variables
+    or Streamlit secrets if available.
+    """
+
+    try:
+
+        import streamlit as st
+
+        host = st.secrets.get(
+            "SMTP_HOST",
+            os.getenv(
+                "SMTP_HOST",
+                "smtp.gmail.com"
+            )
+        )
+
+        port = int(
+            st.secrets.get(
+                "SMTP_PORT",
+                os.getenv(
+                    "SMTP_PORT",
+                    "465"
+                )
+            )
+        )
+
+        username = st.secrets.get(
+            "SMTP_USERNAME",
+            os.getenv(
+                "SMTP_USERNAME",
+                ""
+            )
+        )
+
+        password = st.secrets.get(
+            "SMTP_PASSWORD",
+            os.getenv(
+                "SMTP_PASSWORD",
+                ""
+            )
+        )
+
+    except Exception:
+
+        host = os.getenv(
+            "SMTP_HOST",
+            "smtp.gmail.com"
+        )
+
+        port = int(
+            os.getenv(
+                "SMTP_PORT",
+                "465"
+            )
+        )
+
+        username = os.getenv(
+            "SMTP_USERNAME",
+            ""
+        )
+
+        password = os.getenv(
+            "SMTP_PASSWORD",
+            ""
+        )
+
+    if not username or not password:
+
+        raise RuntimeError(
+            "SMTP username or password is missing."
+        )
 
     message = EmailMessage()
 
-    message["Subject"] = "SustainaByte Login OTP"
-    message["From"] = smtp_username
+    message["Subject"] = (
+        "SustainaByte Verification Code"
+    )
+
+    message["From"] = username
+
     message["To"] = email
 
     message.set_content(
         f"""
-Hello,
-
-Your SustainaByte login verification code is:
+Your SustainaByte verification code is:
 
 {otp}
 
-This OTP is valid for 5 minutes.
+This OTP expires in 5 minutes.
 
-If you did not request this login, you can ignore this email.
-
-SustainaByte
-Sustainable AI Lifecycle Auditor
+If you did not request this code,
+you can ignore this email.
 """
     )
 
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
-        server.starttls()
-        server.login(smtp_username, smtp_password)
-        server.send_message(message)
-def register_and_send_otp(email):
-    email = email.strip().lower()
+    if port == 465:
 
-    if is_registered(email):
-        return False, "This email is already registered."
+        with smtplib.SMTP_SSL(
+            host,
+            port,
+            timeout=20
+        ) as server:
 
-    otp = generate_otp()
-    otp_hash = _hash_otp(otp)
-    expires_at = time.time() + OTP_EXPIRY_SECONDS
+            server.login(
+                username,
+                password
+            )
 
-    connection = sqlite3.connect(DB_PATH)
-    cursor = connection.cursor()
+            server.send_message(
+                message
+            )
 
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO otp_requests
-        (email, otp_hash, expires_at, attempts)
-        VALUES (?, ?, ?, 0)
-        """,
-        (email, otp_hash, expires_at)
-    )
+    else:
 
-    connection.commit()
-    connection.close()
+        with smtplib.SMTP(
+            host,
+            port,
+            timeout=20
+        ) as server:
 
-    try:
-        send_otp_email(email, otp)
-    except Exception as e:
-        return False, f"Email sending failed: {e}"
+            server.ehlo()
 
-    return True, "Registration OTP sent successfully."
+            server.starttls()
+
+            server.ehlo()
+
+            server.login(
+                username,
+                password
+            )
+
+            server.send_message(
+                message
+            )
+
 
 def request_otp(email):
+    """
+    Send a login OTP to an existing user.
+    """
+
     email = email.strip().lower()
 
     if not is_registered(email):
-        return False, "Email address is not registered."
+
+        return (
+            False,
+            "Email address is not registered."
+        )
 
     otp = generate_otp()
+
     otp_hash = _hash_otp(otp)
-    expires_at = time.time() + OTP_EXPIRY_SECONDS
+
+    expires_at = (
+        time.time()
+        + OTP_EXPIRY_SECONDS
+    )
 
     connection = sqlite3.connect(DB_PATH)
+
     cursor = connection.cursor()
 
     cursor.execute(
@@ -181,65 +311,171 @@ def request_otp(email):
         (email, otp_hash, expires_at, attempts)
         VALUES (?, ?, ?, 0)
         """,
-        (email, otp_hash, expires_at)
+        (
+            email,
+            otp_hash,
+            expires_at
+        )
     )
 
     connection.commit()
+
     connection.close()
 
     try:
-        send_otp_email(email, otp)
+
+        send_otp_email(
+            email,
+            otp
+        )
+
     except Exception as e:
-        return False, f"Email sending failed: {e}"
 
-    return True, "OTP sent successfully."
+        return (
+            False,
+            f"Email sending failed: {e}"
+        )
+
+    return (
+        True,
+        "OTP sent successfully."
+    )
 
 
-def verify_otp(email, entered_otp):
-    """Verify the supplied OTP."""
+def register_and_send_otp(email):
+    """
+    Send a registration OTP to a new email.
+    """
 
     email = email.strip().lower()
-    entered_otp = entered_otp.strip()
+
+    if is_registered(email):
+
+        return (
+            False,
+            "This email is already registered."
+        )
+
+    otp = generate_otp()
+
+    otp_hash = _hash_otp(otp)
+
+    expires_at = (
+        time.time()
+        + OTP_EXPIRY_SECONDS
+    )
 
     connection = sqlite3.connect(DB_PATH)
+
     cursor = connection.cursor()
 
     cursor.execute(
         """
-        SELECT otp_hash, expires_at, attempts
+        INSERT OR REPLACE INTO otp_requests
+        (email, otp_hash, expires_at, attempts)
+        VALUES (?, ?, ?, 0)
+        """,
+        (
+            email,
+            otp_hash,
+            expires_at
+        )
+    )
+
+    connection.commit()
+
+    connection.close()
+
+    try:
+
+        send_otp_email(
+            email,
+            otp
+        )
+
+    except Exception as e:
+
+        return (
+            False,
+            f"Email sending failed: {e}"
+        )
+
+    return (
+        True,
+        "Registration OTP sent successfully."
+    )
+
+
+def verify_otp(email, entered_otp):
+    """
+    Verify a previously issued OTP.
+    """
+
+    email = email.strip().lower()
+
+    entered_otp = (
+        entered_otp.strip()
+    )
+
+    connection = sqlite3.connect(DB_PATH)
+
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            otp_hash,
+            expires_at,
+            attempts
         FROM otp_requests
         WHERE email = ?
         """,
         (email,)
     )
 
-    record = cursor.fetchone()
+    result = cursor.fetchone()
 
-    if record is None:
+    if result is None:
+
         connection.close()
-        return False, "No OTP request found."
 
-    stored_hash, expires_at, attempts = record
+        return (
+            False,
+            "No OTP request found."
+        )
+
+    otp_hash, expires_at, attempts = result
 
     if time.time() > expires_at:
+
         cursor.execute(
-            "DELETE FROM otp_requests WHERE email = ?",
+            """
+            DELETE FROM otp_requests
+            WHERE email = ?
+            """,
             (email,)
         )
 
         connection.commit()
+
         connection.close()
 
-        return False, "OTP has expired. Please request a new one."
+        return (
+            False,
+            "OTP has expired."
+        )
 
     if attempts >= MAX_OTP_ATTEMPTS:
-        connection.close()
-        return False, "Too many incorrect attempts. Request a new OTP."
 
-    if not secrets.compare_digest(
-        stored_hash,
-        _hash_otp(entered_otp)
-    ):
+        connection.close()
+
+        return (
+            False,
+            "Too many incorrect attempts."
+        )
+
+    if _hash_otp(entered_otp) != otp_hash:
+
         cursor.execute(
             """
             UPDATE otp_requests
@@ -250,16 +486,27 @@ def verify_otp(email, entered_otp):
         )
 
         connection.commit()
+
         connection.close()
 
-        return False, "Incorrect OTP."
+        return (
+            False,
+            "Incorrect OTP."
+        )
 
     cursor.execute(
-        "DELETE FROM otp_requests WHERE email = ?",
+        """
+        DELETE FROM otp_requests
+        WHERE email = ?
+        """,
         (email,)
     )
 
     connection.commit()
+
     connection.close()
 
-    return True, "OTP verified successfully."
+    return (
+        True,
+        "OTP verified successfully."
+    )
