@@ -130,7 +130,37 @@ Sustainable AI Lifecycle Auditor
         server.starttls()
         server.login(smtp_username, smtp_password)
         server.send_message(message)
+def register_and_send_otp(email):
+    email = email.strip().lower()
 
+    if is_registered(email):
+        return False, "This email is already registered."
+
+    otp = generate_otp()
+    otp_hash = _hash_otp(otp)
+    expires_at = time.time() + OTP_EXPIRY_SECONDS
+
+    connection = sqlite3.connect(DB_PATH)
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO otp_requests
+        (email, otp_hash, expires_at, attempts)
+        VALUES (?, ?, ?, 0)
+        """,
+        (email, otp_hash, expires_at)
+    )
+
+    connection.commit()
+    connection.close()
+
+    try:
+        send_otp_email(email, otp)
+    except Exception as e:
+        return False, f"Email sending failed: {e}"
+
+    return True, "Registration OTP sent successfully."
 
 def request_otp(email):
     email = email.strip().lower()
