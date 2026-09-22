@@ -62,85 +62,161 @@ if "otp_sent" not in st.session_state:
 if not st.session_state["authenticated"]:
 
     st.title("🍃 SustainaByte")
+    st.subheader("🔐 Secure Authentication")
 
-    st.subheader("🔐 Secure Login")
-
-    st.markdown(
-        """
-        Enter your registered email address.
-        We will send you a one-time verification code.
-        """
+    auth_mode = st.radio(
+        "Choose an option",
+        ["Login", "Register"],
+        horizontal=True
     )
 
-    email = st.text_input(
-        "Registered Email",
-        placeholder="you@example.com"
-    ).strip().lower()
+    # ---------------- REGISTER ----------------
+    if auth_mode == "Register":
 
-    if st.button(
-        "📧 Send OTP",
-        use_container_width=True
-    ):
+        st.markdown("### Create your account")
 
-        if not email:
-            st.error("Please enter your email address.")
-
-        elif not is_registered(email):
-            st.error(
-                "This email is not registered."
-            )
-
-        else:
-            success, message = request_otp(email)
-
-            if success:
-                st.session_state["login_email"] = email
-                st.session_state["otp_sent"] = True
-
-                st.success(
-                    "OTP sent to your registered email."
-                )
-
-            else:
-                st.error(message)
-
-
-    if st.session_state["otp_sent"]:
-
-        st.divider()
-
-        st.subheader("🔢 Verify OTP")
-
-        otp = st.text_input(
-            "Enter 6-digit OTP",
-            max_chars=6,
-            type="password"
-        )
+        register_email = st.text_input(
+            "Email Address",
+            placeholder="you@example.com"
+        ).strip().lower()
 
         if st.button(
-            "✅ Verify OTP",
+            "📧 Send Registration OTP",
+            use_container_width=True
+        ):
+            if not register_email:
+                st.error("Please enter your email address.")
+
+            elif is_registered(register_email):
+                st.error("This email is already registered. Please login.")
+
+            else:
+                success, message = register_and_send_otp(
+                    register_email
+                )
+
+                if success:
+                    st.session_state["register_email"] = register_email
+                    st.session_state["register_otp_sent"] = True
+                    st.success("OTP sent to your email.")
+
+                else:
+                    st.error(message)
+
+        if st.session_state.get("register_otp_sent", False):
+
+            st.divider()
+
+            st.markdown("### 🔢 Verify Registration OTP")
+
+            registration_otp = st.text_input(
+                "Enter 6-digit OTP",
+                max_chars=6,
+                type="password",
+                key="registration_otp"
+            )
+
+            if st.button(
+                "✅ Verify & Create Account",
+                use_container_width=True
+            ):
+
+                success, message = verify_otp(
+                    st.session_state["register_email"],
+                    registration_otp
+                )
+
+                if success:
+
+                    register_user(
+                        st.session_state["register_email"]
+                    )
+
+                    st.session_state["register_otp_sent"] = False
+                    st.session_state["otp_sent"] = False
+
+                    st.success(
+                        "Account created successfully! "
+                        "You can now login."
+                    )
+
+                    st.rerun()
+
+                else:
+                    st.error(message)
+
+    # ---------------- LOGIN ----------------
+    else:
+
+        st.markdown("### Login")
+
+        login_email = st.text_input(
+            "Registered Email",
+            placeholder="you@example.com"
+        ).strip().lower()
+
+        if st.button(
+            "📧 Send Login OTP",
             use_container_width=True
         ):
 
-            success, message = verify_otp(
-                st.session_state["login_email"],
-                otp
-            )
+            if not login_email:
+                st.error("Please enter your email address.")
 
-            if success:
-
-                st.session_state["authenticated"] = True
-                st.session_state["otp_sent"] = False
-
-                st.success(
-                    "Login successful!"
+            elif not is_registered(login_email):
+                st.error(
+                    "This email is not registered. "
+                    "Please register first."
                 )
 
-                st.rerun()
-
             else:
-                st.error(message)
 
+                success, message = request_otp(
+                    login_email
+                )
+
+                if success:
+                    st.session_state["login_email"] = login_email
+                    st.session_state["otp_sent"] = True
+                    st.success("OTP sent to your email.")
+
+                else:
+                    st.error(message)
+
+        if st.session_state.get("otp_sent", False):
+
+            st.divider()
+
+            st.markdown("### 🔢 Verify Login OTP")
+
+            login_otp = st.text_input(
+                "Enter 6-digit OTP",
+                max_chars=6,
+                type="password",
+                key="login_otp"
+            )
+
+            if st.button(
+                "✅ Verify OTP",
+                use_container_width=True
+            ):
+
+                success, message = verify_otp(
+                    st.session_state["login_email"],
+                    login_otp
+                )
+
+                if success:
+
+                    st.session_state["authenticated"] = True
+                    st.session_state["otp_sent"] = False
+
+                    st.success("Login successful!")
+
+                    st.rerun()
+
+                else:
+                    st.error(message)
 
     st.stop()
 
