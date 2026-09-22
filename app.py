@@ -1,3 +1,10 @@
+from auditor.auth import (
+    init_auth_db,
+    is_registered,
+    register_user,
+    request_otp,
+    verify_otp,
+)
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -30,7 +37,111 @@ st.set_page_config(
     page_icon="🌱",
     layout="wide"
 )
+# ==================================================
+# AUTHENTICATION
+# ==================================================
 
+init_auth_db()
+register_user("arshiya.routray@gmail.com")
+
+if "authenticated" not in st.session_state:
+    st.session_state["authenticated"] = False
+
+if "login_email" not in st.session_state:
+    st.session_state["login_email"] = ""
+
+if "otp_sent" not in st.session_state:
+    st.session_state["otp_sent"] = False
+
+
+# ==================================================
+# LOGIN SCREEN
+# ==================================================
+
+if not st.session_state["authenticated"]:
+
+    st.title("🍃 SustainaByte")
+
+    st.subheader("🔐 Secure Login")
+
+    st.markdown(
+        """
+        Enter your registered email address.
+        We will send you a one-time verification code.
+        """
+    )
+
+    email = st.text_input(
+        "Registered Email",
+        placeholder="you@example.com"
+    ).strip().lower()
+
+    if st.button(
+        "📧 Send OTP",
+        use_container_width=True
+    ):
+
+        if not email:
+            st.error("Please enter your email address.")
+
+        elif not is_registered(email):
+            st.error(
+                "This email is not registered."
+            )
+
+        else:
+            success, message = request_otp(email)
+
+            if success:
+                st.session_state["login_email"] = email
+                st.session_state["otp_sent"] = True
+
+                st.success(
+                    "OTP sent to your registered email."
+                )
+
+            else:
+                st.error(message)
+
+
+    if st.session_state["otp_sent"]:
+
+        st.divider()
+
+        st.subheader("🔢 Verify OTP")
+
+        otp = st.text_input(
+            "Enter 6-digit OTP",
+            max_chars=6,
+            type="password"
+        )
+
+        if st.button(
+            "✅ Verify OTP",
+            use_container_width=True
+        ):
+
+            success, message = verify_otp(
+                st.session_state["login_email"],
+                otp
+            )
+
+            if success:
+
+                st.session_state["authenticated"] = True
+                st.session_state["otp_sent"] = False
+
+                st.success(
+                    "Login successful!"
+                )
+
+                st.rerun()
+
+            else:
+                st.error(message)
+
+
+    st.stop()
 
 # ============================================================
 # TITLE
