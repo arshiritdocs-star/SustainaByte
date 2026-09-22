@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import hashlib
 
 from auditor.architectures import get_architectures
 from auditor.lifecycle_math import (
@@ -25,6 +26,8 @@ from auditor.sync_engine import (
     get_pending_audits_count,
     get_all_audits,
     reconcile_pending_audits,
+    save_audit,
+    set_simulated_outage,
     start_background_reconciler
 )
 
@@ -252,35 +255,53 @@ if "init_done" not in st.session_state:
 
 st.divider()
 
+# ------------------------------------------------------------
+# Connectivity / offline-demo state
+# ------------------------------------------------------------
+# The toggle is intentionally applied before connectivity checks so the
+# background reconciler and the UI see the same simulated-outage state.
+simulated_outage = st.sidebar.toggle(
+    "Simulate Network Outage",
+    value=False,
+    help=(
+        "Demo mode: disables internet-dependent functionality while "
+        "keeping local sustainability calculations operational."
+    )
+)
+
+set_simulated_outage(simulated_outage)
+
+online = is_connected()
+pending_count = get_pending_audits_count()
+
 col_status, col_sync = st.columns([4, 1])
 
 with col_status:
-
-    if is_connected():
-
-        st.success(
-            f"🟢 *System Online* | Cloud Gemini Active | "
-            f"Queue: {get_pending_audits_count()}"
-        )
-
-    else:
-
+    if simulated_outage:
         st.warning(
-            f"🟠 *Network Offline* | Local Math Active | "
-            f"Unsynced: {get_pending_audits_count()}"
+            f"🟠 **Simulated Offline Mode** | "
+            f"Local Math Active | Pending: {pending_count}"
         )
-
+    elif online:
+        st.success(
+            f"🟢 **System Online** | Gemini Available | "
+            f"Pending: {pending_count}"
+        )
+    else:
+        st.warning(
+            f"🟠 **Network Offline** | Local Math Active | "
+            f"Pending: {pending_count}"
+        )
 
 with col_sync:
-
     if st.button(
-        "🔄 Force Sync",
-        use_container_width=True
+        "🔄 Force Reconcile",
+        use_container_width=True,
+        disabled=not online,
     ):
-
-        reconcile_pending_audits()
+        reconciled = reconcile_pending_audits()
+        st.success(f"Reconciled {reconciled} pending audit(s).")
         st.rerun()
-
 
 st.divider()
 
@@ -329,11 +350,6 @@ pue = st.sidebar.number_input(
 
 
 st.sidebar.divider()
-
-simulated_outage = st.sidebar.toggle(
-    "Simulate Network Outage",
-    value=False
-)
 
 
 # ============================================================
@@ -745,7 +761,6 @@ else:
 
 st.header("🍃 Gemini Eco-Nutrition Label")
 
-
 audited_models = df[
     [
         "name",
@@ -765,13 +780,75 @@ workload_desc = (
 )
 
 
-audit_result = run_lifecycle_audit(
-    workload_desc=workload_desc,
-    target_acc=min_accuracy,
-    max_lat=max_latency,
-    audited_models=audited_models
-)
+# ------------------------------------------------------------
+# Online Gemini audit OR local offline fallback
+# ------------------------------------------------------------
+# The deterministic lifecycle calculations above are the critical
+# offline function. Gemini is optional and is never allowed to
+# break the local analysis.
+if online:
+    try:
+        audit_result = run_lifecycle_audit(
+            workload_desc=workload_desc,
+            target_acc=min_accuracy,
+            max_lat=max_latency,
+            audited_models=audited_models
+        )
+        audit_source = "gemini"
+        st.success("Gemini audit available.")
+    except Exception as e:
+        audit_result = (
+            "### Local Audit Fallback\n\n"
+            "Gemini could not be reached, so SustainaByte continued "
+            "using the local deterministic lifecycle analysis.\n\n"
+            f"- Requests: {requests:,}\n"
+            f"- Operating hours: {workload_hours}\n"
+            f"- PUE: {pue}\n"
+            f"- Accuracy requirement: {min_accuracy:.1f}%\n"
+            f"- Latency requirement: {max_latency:.1f} ms\n\n"
+            "The architecture metrics and sustainability scores shown "
+            "above were calculated locally."
+        )
+        audit_source = "local_fallback"
+        st.warning("Gemini unavailable. Using local audit fallback.")
+else:
+    audit_result = (
+        "### 🟠 Offline Sustainability Audit\n\n"
+        "**Local analysis is active.** Internet-dependent Gemini auditing "
+        "is temporarily disabled.\n\n"
+        f"- Requests: {requests:,}\n"
+        f"- Operating hours: {workload_hours}\n"
+        f"- PUE: {pue}\n"
+        f"- Accuracy requirement: {min_accuracy:.1f}%\n"
+        f"- Latency requirement: {max_latency:.1f} ms\n\n"
+        "**Critical offline functionality:** energy, carbon, storage, "
+        "networking, hardware, retraining, SLA, and sustainability-score "
+        "calculations continue locally.\n\n"
+        "This audit result has been retained in the local SQLite ledger "
+        "for reconciliation when connectivity returns."
+    )
+    audit_source = "offline"
 
+
+# Persist one record for this exact workload/mode. The key prevents
+# Streamlit reruns from creating duplicate audit records.
+audit_key_payload = (
+    f"{audit_source}|{requests}|{workload_hours}|{max_latency}|"
+    f"{min_accuracy}|{pue}|"
+    f"{[(row['name'], round(row['total_lifecycle_carbon_kg'], 8)) for row in audited_models]}"
+)
+audit_key = hashlib.sha256(
+    audit_key_payload.encode("utf-8")
+).hexdigest()
+
+try:
+    save_audit(
+        audit_text=audit_result,
+        audit_key=audit_key,
+        source=audit_source,
+    )
+except Exception as e:
+    st.warning(f"Could not save audit to the local ledger: {e}")
 
 st.markdown(audit_result)
 
@@ -1022,27 +1099,39 @@ st.plotly_chart(
 
 st.header("🗃️ Offline Audit Ledger")
 
-
 try:
-
     audit_history = get_all_audits()
 
     if audit_history:
+        history_df = pd.DataFrame(
+            audit_history,
+            columns=[
+                "ID",
+                "Created At",
+                "Status",
+                "Source",
+                "Reconciled At",
+                "Audit Text",
+            ],
+        )
 
         st.dataframe(
-            pd.DataFrame(audit_history),
+            history_df,
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
         )
 
+        pending_now = get_pending_audits_count()
+        if pending_now:
+            st.warning(
+                f"{pending_now} audit(s) are waiting for reconciliation."
+            )
+        else:
+            st.success(
+                "All locally retained audits have been reconciled."
+            )
     else:
-
-        st.info(
-            "No audit records are currently stored."
-        )
+        st.info("No audit records are currently stored.")
 
 except Exception as e:
-
-    st.info(
-        f"Audit ledger unavailable: {e}"
-    )
+    st.info(f"Audit ledger unavailable: {e}")
