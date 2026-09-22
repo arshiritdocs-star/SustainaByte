@@ -133,15 +133,12 @@ Sustainable AI Lifecycle Auditor
 
 
 def request_otp(email):
-    """Generate, store and send an OTP."""
-
     email = email.strip().lower()
 
     if not is_registered(email):
         return False, "Email address is not registered."
 
     otp = generate_otp()
-
     otp_hash = _hash_otp(otp)
     expires_at = time.time() + OTP_EXPIRY_SECONDS
 
@@ -160,10 +157,11 @@ def request_otp(email):
     connection.commit()
     connection.close()
 
-   try:
-    send_otp_email(email, otp)
-except Exception as e:
-    return False, f"Email sending failed: {e}"
+    try:
+        send_otp_email(email, otp)
+    except Exception as e:
+        return False, f"Email sending failed: {e}"
+
     return True, "OTP sent successfully."
 
 
