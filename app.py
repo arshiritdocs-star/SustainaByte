@@ -4,7 +4,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from auditor.architectures import get_architectures
-from auditor.lifecycle_math import Workload, calculate_lifecycle_impact
+from auditor.lifecycle_math import (
+    Workload,
+    calculate_lifecycle_impact
+)
 
 
 # ============================================================
@@ -77,16 +80,24 @@ GRID_CARBON_INTENSITY = 0.45
 
 
 # ============================================================
-# ARCHITECTURE CALCULATIONS
+# WORKLOAD
 # ============================================================
-
-architectures = get_architectures()
 
 workload = Workload(
     inference_count=requests,
     training_hours=workload_hours,
-    carbon_intensity_gco2_per_kwh=GRID_CARBON_INTENSITY * 1000
+    carbon_intensity_gco2_per_kwh=(
+        GRID_CARBON_INTENSITY * 1000
+    ),
+    pue=pue
 )
+
+
+# ============================================================
+# ARCHITECTURE CALCULATIONS
+# ============================================================
+
+architectures = get_architectures()
 
 results = []
 
@@ -100,19 +111,72 @@ for architecture in architectures:
     results.append(
         {
             "Architecture": architecture.name,
-            "Latency (ms)": architecture.estimated_latency_ms,
-            "Accuracy (%)": architecture.estimated_accuracy * 100,
-            "Hardware Carbon (kg)": impact["hardware"]["embodied_carbon_kg"],
-            "Inference Energy (kWh)": impact["energy"]["inference_energy_kwh"],
-            "Inference Carbon (kg)": (
-                impact["energy"]["inference_energy_kwh"]
-                * GRID_CARBON_INTENSITY
-            ),
-            "Storage (GB)": impact["storage"]["total_storage_gb"],
-            "Networking Energy (kWh)": impact["networking"]["network_energy_kwh"],
-            "Retraining Energy (kWh)": impact["retraining"]["retraining_energy_kwh"],
-            "Total Energy (kWh)": impact["energy"]["total_energy_kwh"],
-            "Total Carbon (kg)": impact["carbon"]["total_carbon_kg"],
+
+            "Latency (ms)":
+                architecture.estimated_latency_ms,
+
+            "Accuracy (%)":
+                architecture.estimated_accuracy * 100,
+
+            "Inference Energy (kWh)":
+                impact["energy"][
+                    "inference_energy_kwh"
+                ],
+
+            "Inference Carbon (kg)":
+                impact["energy"][
+                    "inference_energy_kwh"
+                ] * GRID_CARBON_INTENSITY,
+
+            "Total Energy (kWh)":
+                impact["energy"][
+                    "total_energy_kwh"
+                ],
+
+            "Operational Carbon (kg)":
+                impact["carbon"][
+                    "operational_carbon_kg"
+                ],
+
+            "Hardware Carbon (kg)":
+                impact["hardware"][
+                    "embodied_carbon_kg"
+                ],
+
+            "Total Carbon (kg)":
+                impact["carbon"][
+                    "total_carbon_kg"
+                ],
+
+            "Storage (GB)":
+                impact["storage"][
+                    "total_storage_gb"
+                ],
+
+            "Networking Energy (kWh)":
+                impact["networking"][
+                    "network_energy_kwh"
+                ],
+
+            "Networking (GB)":
+                impact["networking"][
+                    "total_network_gb"
+                ],
+
+            "Retraining Energy (kWh)":
+                impact["retraining"][
+                    "retraining_energy_kwh"
+                ],
+
+            "Retraining Carbon (kg)":
+                impact["retraining"][
+                    "retraining_carbon_kg"
+                ],
+
+            "Retraining Runs":
+                impact["retraining"][
+                    "retraining_runs"
+                ],
         }
     )
 
@@ -124,11 +188,77 @@ df = pd.DataFrame(results)
 # SLA EVALUATION
 # ============================================================
 
-df["Latency OK"] = df["Latency (ms)"] <= max_latency
+df["Latency OK"] = (
+    df["Latency (ms)"]
+    <= max_latency
+)
 
-df["Accuracy OK"] = df["Accuracy (%)"] >= min_accuracy
+df["Accuracy OK"] = (
+    df["Accuracy (%)"]
+    >= min_accuracy
+)
 
-df["SLA Met"] = df["Latency OK"] & df["Accuracy OK"]
+df["SLA Met"] = (
+    df["Latency OK"]
+    & df["Accuracy OK"]
+)
+
+
+# ============================================================
+# NORMALIZED SUSTAINABILITY SCORE
+# ============================================================
+
+def normalize_inverse(series):
+
+    minimum = series.min()
+    maximum = series.max()
+
+    if maximum == minimum:
+        return pd.Series(
+            [100.0] * len(series),
+            index=series.index
+        )
+
+    return (
+        100
+        * (maximum - series)
+        / (maximum - minimum)
+    )
+
+
+energy_score = normalize_inverse(
+    df["Total Energy (kWh)"]
+)
+
+carbon_score = normalize_inverse(
+    df["Total Carbon (kg)"]
+)
+
+storage_score = normalize_inverse(
+    df["Storage (GB)"]
+)
+
+network_score = normalize_inverse(
+    df["Networking (GB)"]
+)
+
+retraining_score = normalize_inverse(
+    df["Retraining Carbon (kg)"]
+)
+
+latency_score = normalize_inverse(
+    df["Latency (ms)"]
+)
+
+
+df["Sustainability Score"] = (
+    energy_score
+    + carbon_score
+    + storage_score
+    + network_score
+    + retraining_score
+    + latency_score
+) / 6
 
 
 # ============================================================
@@ -140,18 +270,21 @@ st.header("📋 SLA Summary")
 col1, col2, col3 = st.columns(3)
 
 with col1:
+
     st.metric(
         "Maximum Latency",
         f"{max_latency:.1f} ms"
     )
 
 with col2:
+
     st.metric(
         "Minimum Accuracy",
         f"{min_accuracy:.1f}%"
     )
 
 with col3:
+
     st.metric(
         "PUE",
         f"{pue:.2f}"
@@ -170,17 +303,19 @@ st.dataframe(
             "Architecture",
             "Latency (ms)",
             "Accuracy (%)",
-            "Hardware Carbon (kg)",
             "Inference Energy (kWh)",
             "Inference Carbon (kg)",
+            "Total Energy (kWh)",
+            "Total Carbon (kg)",
             "Storage (GB)",
             "Networking Energy (kWh)",
             "Retraining Energy (kWh)",
-            "Total Energy (kWh)",
-            "Total Carbon (kg)",
+            "Hardware Carbon (kg)",
+            "Sustainability Score",
         ]
     ],
-    use_container_width=True
+    use_container_width=True,
+    hide_index=True
 )
 
 
@@ -201,7 +336,31 @@ st.dataframe(
             "SLA Met",
         ]
     ],
-    use_container_width=True
+    use_container_width=True,
+    hide_index=True
+)
+
+
+# ============================================================
+# SIX PILLARS
+# ============================================================
+
+st.header("🌱 Six-Pillar Lifecycle Impact")
+
+st.dataframe(
+    df[
+        [
+            "Architecture",
+            "Total Energy (kWh)",
+            "Total Carbon (kg)",
+            "Storage (GB)",
+            "Networking (GB)",
+            "Hardware Carbon (kg)",
+            "Retraining Carbon (kg)",
+        ]
+    ],
+    use_container_width=True,
+    hide_index=True
 )
 
 
@@ -216,21 +375,29 @@ eligible = df[df["SLA Met"]]
 if len(eligible) > 0:
 
     recommended = eligible.loc[
-        eligible["Total Carbon (kg)"].idxmin()
+        eligible["Sustainability Score"].idxmax()
     ]
 
     st.success(
-        f"Recommended Architecture: **{recommended['Architecture']}**"
+        f"Recommended Architecture: "
+        f"**{recommended['Architecture']}**"
     )
 
     st.write(
-        f"Total Carbon: **{recommended['Total Carbon (kg)']:.2f} kg CO₂e**"
+        f"Sustainability Score: "
+        f"**{recommended['Sustainability Score']:.2f}/100**"
+    )
+
+    st.write(
+        f"Total Carbon: "
+        f"**{recommended['Total Carbon (kg)']:.2f} kg CO₂e**"
     )
 
 else:
 
     st.warning(
-        "No architecture satisfies both the latency and accuracy constraints."
+        "No architecture satisfies both "
+        "the latency and accuracy constraints."
     )
 
 
@@ -241,7 +408,9 @@ else:
 st.header("📊 Sustainability Analysis")
 
 
-# Energy comparison
+# ============================================================
+# ENERGY
+# ============================================================
 
 fig_energy = px.bar(
     df,
@@ -256,7 +425,9 @@ st.plotly_chart(
 )
 
 
-# Carbon comparison
+# ============================================================
+# CARBON
+# ============================================================
 
 fig_carbon = px.bar(
     df,
@@ -271,7 +442,9 @@ st.plotly_chart(
 )
 
 
-# Latency comparison
+# ============================================================
+# LATENCY
+# ============================================================
 
 fig_latency = px.bar(
     df,
@@ -286,7 +459,9 @@ st.plotly_chart(
 )
 
 
-# Accuracy comparison
+# ============================================================
+# ACCURACY
+# ============================================================
 
 fig_accuracy = px.bar(
     df,
@@ -301,13 +476,50 @@ st.plotly_chart(
 )
 
 
-# Carbon vs accuracy
+# ============================================================
+# NETWORKING
+# ============================================================
+
+fig_network = px.bar(
+    df,
+    x="Architecture",
+    y="Networking Energy (kWh)",
+    title="Networking Energy"
+)
+
+st.plotly_chart(
+    fig_network,
+    use_container_width=True
+)
+
+
+# ============================================================
+# RETRAINING
+# ============================================================
+
+fig_retraining = px.bar(
+    df,
+    x="Architecture",
+    y="Retraining Carbon (kg)",
+    title="Retraining Carbon Impact"
+)
+
+st.plotly_chart(
+    fig_retraining,
+    use_container_width=True
+)
+
+
+# ============================================================
+# ACCURACY VS CARBON
+# ============================================================
 
 fig_tradeoff = px.scatter(
     df,
     x="Accuracy (%)",
     y="Total Carbon (kg)",
     text="Architecture",
+    size="Sustainability Score",
     title="Accuracy vs Carbon Impact"
 )
 
@@ -317,5 +529,93 @@ fig_tradeoff.update_traces(
 
 st.plotly_chart(
     fig_tradeoff,
+    use_container_width=True
+)
+
+
+# ============================================================
+# SUSTAINABILITY SCORE
+# ============================================================
+
+fig_score = px.bar(
+    df,
+    x="Architecture",
+    y="Sustainability Score",
+    title="Composite Sustainability Score",
+    range_y=[0, 100]
+)
+
+st.plotly_chart(
+    fig_score,
+    use_container_width=True
+)
+
+
+# ============================================================
+# RADAR CHART
+# ============================================================
+
+st.header("🕸️ Lifecycle Sustainability Radar")
+
+radar_metrics = [
+    "Energy Efficiency",
+    "Carbon Efficiency",
+    "Storage Efficiency",
+    "Network Efficiency",
+    "Retraining Efficiency",
+    "Latency Efficiency",
+]
+
+score_columns = [
+    energy_score,
+    carbon_score,
+    storage_score,
+    network_score,
+    retraining_score,
+    latency_score,
+]
+
+fig_radar = go.Figure()
+
+for index, architecture in enumerate(
+    df["Architecture"]
+):
+
+    values = [
+        score_columns[0].iloc[index],
+        score_columns[1].iloc[index],
+        score_columns[2].iloc[index],
+        score_columns[3].iloc[index],
+        score_columns[4].iloc[index],
+        score_columns[5].iloc[index],
+    ]
+
+    values.append(values[0])
+
+    categories = radar_metrics + [
+        radar_metrics[0]
+    ]
+
+    fig_radar.add_trace(
+        go.Scatterpolar(
+            r=values,
+            theta=categories,
+            fill="toself",
+            name=architecture
+        )
+    )
+
+fig_radar.update_layout(
+    polar=dict(
+        radialaxis=dict(
+            visible=True,
+            range=[0, 100]
+        )
+    ),
+    title="Architecture Lifecycle Sustainability Profile"
+)
+
+st.plotly_chart(
+    fig_radar,
     use_container_width=True
 )
