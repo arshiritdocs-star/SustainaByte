@@ -43,8 +43,6 @@ st.set_page_config(
 # ==================================================
 
 init_auth_db()
-register_user("arshiya.routray@gmail.com")
-
 if "authenticated" not in st.session_state:
     st.session_state["authenticated"] = False
 
@@ -54,6 +52,11 @@ if "login_email" not in st.session_state:
 if "otp_sent" not in st.session_state:
     st.session_state["otp_sent"] = False
 
+if "register_email" not in st.session_state:
+    st.session_state["register_email"] = ""
+
+if "register_otp_sent" not in st.session_state:
+    st.session_state["register_otp_sent"] = False
 
 # ==================================================
 # LOGIN SCREEN
