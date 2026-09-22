@@ -3,6 +3,7 @@ from auditor.auth import (
     is_registered,
     register_user,
     request_otp,
+    register_and_send_otp,
     verify_otp,
 )
 import streamlit as st
