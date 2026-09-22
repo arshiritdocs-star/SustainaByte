@@ -160,12 +160,10 @@ def request_otp(email):
     connection.commit()
     connection.close()
 
-    try:
-        send_otp_email(email, otp)
-
-    except Exception:
-        return False, "Unable to send OTP email. Check SMTP configuration."
-
+   try:
+    send_otp_email(email, otp)
+except Exception as e:
+    return False, f"Email sending failed: {e}"
     return True, "OTP sent successfully."
 
 
