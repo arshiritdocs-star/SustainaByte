@@ -1,33 +1,19 @@
 """
-Deterministic lifecycle calculations for the Sustainable AI Auditor.
+Lifecycle impact calculations for the Sustainable AI Lifecycle Auditor.
 
-The six lifecycle pillars are:
-
-1. Energy
-2. Carbon
-3. Storage
-4. Networking
-5. Hardware
-6. Retraining
-
-All calculations are architecture-specific.
+All values are estimates intended for scenario analysis.
+They are not direct measurements of a production system.
 """
 
 from dataclasses import dataclass
-from math import isfinite
-from typing import Dict, List, Mapping, Optional
-
-from auditor.architectures import Architecture, get_architectures
-
-
-DEFAULT_CARBON_INTENSITY_GCO2_PER_KWH = 450.0
-DEFAULT_HARDWARE_LIFETIME_HOURS = 4 * 365 * 24.0
-DEFAULT_NETWORK_ENERGY_KWH_PER_GB = 0.05
+from typing import Optional
 
 
 @dataclass(frozen=True, slots=True)
 class Workload:
-    """Audited workload inputs."""
+    """
+    Description of an AI workload.
+    """
 
     training_hours: float = 0.0
     training_power_watts: float = 300.0
@@ -39,652 +25,447 @@ class Workload:
     network_transfer_gb: float = 0.0
 
     replication_factor: int = 2
+
     storage_duration_years: float = 1.0
 
-    carbon_intensity_gco2_per_kwh: float = (
-        DEFAULT_CARBON_INTENSITY_GCO2_PER_KWH
-    )
+    carbon_intensity_gco2_per_kwh: float = 450.0
 
-    hardware_lifetime_hours: float = DEFAULT_HARDWARE_LIFETIME_HOURS
+    hardware_lifetime_hours: float = 4 * 365 * 24.0
+
     hardware_utilization: float = 0.5
 
     retraining_runs: Optional[int] = None
+
     retraining_training_hours: float = 0.0
+
     checkpoints_per_retraining_run: int = 1
 
     deployment_nodes: int = 1
 
-    network_energy_kwh_per_gb: float = DEFAULT_NETWORK_ENERGY_KWH_PER_GB
+    network_energy_kwh_per_gb: float = 0.05
 
-    # Data transferred per inference request.
     inference_payload_gb_per_request: float = 0.00005
 
-    # Data-centre overhead.
     pue: float = 1.4
 
 
-def _validate_workload(workload: Workload) -> None:
+def _safe_positive(value: float) -> float:
+    """
+    Prevent negative values from entering calculations.
+    """
 
-    if not isinstance(workload, Workload):
-        raise TypeError("workload must be a Workload instance.")
-
-    floats = (
-        "training_hours",
-        "training_power_watts",
-        "dataset_size_gb",
-        "network_transfer_gb",
-        "storage_duration_years",
-        "carbon_intensity_gco2_per_kwh",
-        "hardware_lifetime_hours",
-        "hardware_utilization",
-        "retraining_training_hours",
-        "network_energy_kwh_per_gb",
-        "inference_payload_gb_per_request",
-        "pue",
-    )
-
-    for name in floats:
-
-        value = getattr(workload, name)
-
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not isfinite(value)
-            or value < 0
-        ):
-            raise ValueError(
-                f"{name} must be a finite non-negative number."
-            )
-
-    for name in (
-        "inference_count",
-        "replication_factor",
-        "checkpoints_per_retraining_run",
-        "deployment_nodes",
-    ):
-
-        value = getattr(workload, name)
-
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or value < 0
-        ):
-            raise ValueError(
-                f"{name} must be a non-negative integer."
-            )
-
-    if workload.retraining_runs is not None:
-
-        value = workload.retraining_runs
-
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or value < 0
-        ):
-            raise ValueError(
-                "retraining_runs must be a non-negative integer or None."
-            )
-
-    if workload.hardware_lifetime_hours <= 0:
-        raise ValueError(
-            "hardware_lifetime_hours must be greater than zero."
-        )
-
-    if not 0 < workload.hardware_utilization <= 1:
-        raise ValueError(
-            "hardware_utilization must be in (0, 1]."
-        )
-
-    if workload.pue < 1:
-        raise ValueError("pue must be at least 1.0.")
+    return max(0.0, float(value))
 
 
-def _runs(
-    architecture: Architecture,
+def calculate_training_energy(
+    architecture,
     workload: Workload
-) -> int:
+) -> float:
+    """
+    Estimate training energy in kWh.
+    """
 
-    if workload.retraining_runs is not None:
-        return workload.retraining_runs
-
-    return architecture.retraining_frequency
-
-
-# ============================================================
-# NETWORKING
-# ============================================================
-
-def calculate_networking(
-    architecture: Architecture,
-    workload: Workload
-) -> Dict[str, float]:
-
-    _validate_workload(workload)
-
-    retraining_runs = _runs(architecture, workload)
-
-    dataset_transfer = workload.dataset_size_gb
-
-    retraining_transfer = (
-        workload.dataset_size_gb
-        * retraining_runs
-    )
-
-    model_distribution = (
-        architecture.model_size_mb / 1024
-        * workload.deployment_nodes
-    )
-
-    replication_network = (
-        workload.dataset_size_gb
-        * max(0, workload.replication_factor - 1)
-    )
-
-    inference_traffic = (
-        workload.inference_count
-        * workload.inference_payload_gb_per_request
-    )
-
-    other_network = workload.network_transfer_gb
-
-    total_network_gb = (
-        dataset_transfer
-        + retraining_transfer
-        + model_distribution
-        + replication_network
-        + inference_traffic
-        + other_network
-    )
-
-    network_energy = (
-        total_network_gb
-        * workload.network_energy_kwh_per_gb
-        * workload.pue
-    )
-
-    return {
-        "dataset_transfer_gb": dataset_transfer,
-        "retraining_dataset_transfer_gb": retraining_transfer,
-        "model_distribution_gb": model_distribution,
-        "replication_network_gb": replication_network,
-        "inference_traffic_gb": inference_traffic,
-        "other_network_gb": other_network,
-        "total_network_gb": total_network_gb,
-        "network_energy_kwh": network_energy,
-    }
-
-
-# ============================================================
-# ENERGY
-# ============================================================
-
-def calculate_energy(
-    architecture: Architecture,
-    workload: Workload
-) -> Dict[str, float]:
-
-    _validate_workload(workload)
-
-    # Training energy.
-    training_energy = (
+    training_hours = _safe_positive(
         workload.training_hours
-        * workload.training_power_watts
-        / 1000
+    )
+
+    base_power_kw = (
+        _safe_positive(workload.training_power_watts)
+        / 1000.0
+    )
+
+    return (
+        training_hours
+        * base_power_kw
+        * architecture.training_compute
         * workload.pue
     )
 
-    # Architecture-specific inference energy.
-    #
-    # 1 compute unit = 0.02 Wh/request.
-    # Therefore:
-    #
-    # Logistic Regression = 0.02 Wh/request
-    # Random Forest       = 0.10 Wh/request
-    # CNN                 = 0.30 Wh/request
-    # Transformer         = 1.60 Wh/request
-    #
-    inference_energy_per_request_wh = (
-        architecture.inference_compute * 0.02
+
+def calculate_inference_energy(
+    architecture,
+    workload: Workload
+) -> float:
+    """
+    Estimate inference energy in kWh.
+
+    The architecture's inference_compute value is
+    treated as a relative compute multiplier.
+    """
+
+    requests = max(
+        0,
+        int(workload.inference_count)
     )
 
-    inference_energy = (
-        workload.inference_count
-        * inference_energy_per_request_wh
-        / 1000
+    # Base energy per request in kWh.
+    base_energy_per_request = 0.000001
+
+    return (
+        requests
+        * base_energy_per_request
+        * architecture.inference_compute
         * workload.pue
     )
 
-    # Architecture-specific retraining.
-    retraining_runs = _runs(
-        architecture,
-        workload
+
+def calculate_storage_impact(
+    architecture,
+    workload: Workload
+) -> float:
+    """
+    Estimate storage footprint in GB-hours.
+
+    Storage includes the dataset and model replicas.
+    """
+
+    dataset_size = _safe_positive(
+        workload.dataset_size_gb
     )
 
-    retraining_energy = (
+    model_size = _safe_positive(
+        architecture.model_size_mb
+    ) / 1024.0
+
+    replication = max(
+        1,
+        int(workload.replication_factor)
+    )
+
+    storage_duration_hours = (
+        _safe_positive(workload.storage_duration_years)
+        * 365.0
+        * 24.0
+    )
+
+    total_storage_gb = (
+        dataset_size
+        + model_size
+    ) * replication
+
+    return (
+        total_storage_gb
+        * storage_duration_hours
+    )
+
+
+def calculate_networking_energy(
+    architecture,
+    workload: Workload
+) -> float:
+    """
+    Estimate networking energy in kWh.
+    """
+
+    requests = max(
+        0,
+        int(workload.inference_count)
+    )
+
+    payload_gb = _safe_positive(
+        workload.inference_payload_gb_per_request
+    )
+
+    explicit_transfer = _safe_positive(
+        workload.network_transfer_gb
+    )
+
+    inference_transfer = (
+        requests
+        * payload_gb
+    )
+
+    total_transfer_gb = (
+        explicit_transfer
+        + inference_transfer
+    )
+
+    return (
+        total_transfer_gb
+        * _safe_positive(
+            workload.network_energy_kwh_per_gb
+        )
+    )
+
+
+def calculate_hardware_impact(
+    architecture,
+    workload: Workload
+) -> tuple:
+    """
+    Estimate hardware energy and carbon contribution.
+
+    Returns:
+        hardware_energy_kwh,
+        hardware_carbon_kg
+    """
+
+    hardware_lifetime = max(
+        1.0,
+        _safe_positive(
+            workload.hardware_lifetime_hours
+        )
+    )
+
+    utilization = min(
+        1.0,
+        max(
+            0.0,
+            _safe_positive(
+                workload.hardware_utilization
+            )
+        )
+    )
+
+    memory_gb = (
+        _safe_positive(
+            architecture.memory_requirement_mb
+        ) / 1024.0
+    )
+
+    if architecture.hardware_requirement == "large_gpu":
+        hardware_power_watts = 500.0
+
+    elif architecture.hardware_requirement == "small_gpu":
+        hardware_power_watts = 250.0
+
+    else:
+        hardware_power_watts = 100.0
+
+    deployment_nodes = max(
+        1,
+        int(workload.deployment_nodes)
+    )
+
+    hardware_hours = (
+        hardware_lifetime
+        * utilization
+    )
+
+    hardware_energy_kwh = (
+        hardware_power_watts
+        / 1000.0
+        * hardware_hours
+        * deployment_nodes
+    )
+
+    # Approximate embodied hardware carbon factor.
+    hardware_carbon_factor = (
+        0.5
+        + memory_gb * 0.02
+    )
+
+    hardware_carbon_kg = (
+        hardware_energy_kwh
+        * hardware_carbon_factor
+    )
+
+    return (
+        hardware_energy_kwh,
+        hardware_carbon_kg
+    )
+
+
+def calculate_retraining_energy(
+    architecture,
+    workload: Workload
+) -> float:
+    """
+    Estimate energy consumed by retraining runs.
+    """
+
+    if workload.retraining_runs is None:
+        retraining_runs = max(
+            0,
+            int(architecture.retraining_frequency)
+        )
+    else:
+        retraining_runs = max(
+            0,
+            int(workload.retraining_runs)
+        )
+
+    training_hours = _safe_positive(
+        workload.retraining_training_hours
+    )
+
+    base_power_kw = (
+        _safe_positive(
+            workload.training_power_watts
+        )
+        / 1000.0
+    )
+
+    checkpoints = max(
+        1,
+        int(workload.checkpoints_per_retraining_run)
+    )
+
+    return (
         retraining_runs
-        * workload.retraining_training_hours
-        * workload.training_power_watts
-        / 1000
+        * training_hours
+        * base_power_kw
+        * architecture.training_compute
         * workload.pue
-        * (architecture.training_compute / 10)
+        * checkpoints
     )
 
-    networking_energy = calculate_networking(
+
+def calculate_lifecycle_impact(
+    architecture,
+    workload: Workload
+) -> dict:
+    """
+    Calculate the estimated lifecycle impact of an architecture.
+
+    Returns a dictionary containing energy, carbon,
+    storage, networking, hardware and retraining metrics.
+    """
+
+    carbon_factor = (
+        _safe_positive(
+            workload.carbon_intensity_gco2_per_kwh
+        )
+        / 1000.0
+    )
+
+    training_energy = calculate_training_energy(
         architecture,
         workload
-    )["network_energy_kwh"]
+    )
+
+    inference_energy = calculate_inference_energy(
+        architecture,
+        workload
+    )
+
+    networking_energy = calculate_networking_energy(
+        architecture,
+        workload
+    )
+
+    retraining_energy = calculate_retraining_energy(
+        architecture,
+        workload
+    )
+
+    hardware_energy, hardware_carbon = (
+        calculate_hardware_impact(
+            architecture,
+            workload
+        )
+    )
+
+    storage_impact = calculate_storage_impact(
+        architecture,
+        workload
+    )
+
+    training_carbon = (
+        training_energy
+        * carbon_factor
+    )
+
+    inference_carbon = (
+        inference_energy
+        * carbon_factor
+    )
+
+    networking_carbon = (
+        networking_energy
+        * carbon_factor
+    )
+
+    retraining_carbon = (
+        retraining_energy
+        * carbon_factor
+    )
 
     total_energy = (
         training_energy
         + inference_energy
-        + retraining_energy
         + networking_energy
+        + retraining_energy
+        + hardware_energy
+    )
+
+    total_carbon = (
+        training_carbon
+        + inference_carbon
+        + networking_carbon
+        + retraining_carbon
+        + hardware_carbon
     )
 
     return {
         "training_energy_kwh": training_energy,
+
+        "training_carbon_kg": training_carbon,
+
         "inference_energy_kwh": inference_energy,
-        "inference_energy_per_request_wh":
-            inference_energy_per_request_wh,
-        "retraining_energy_kwh": retraining_energy,
+
+        "inference_carbon_kg": inference_carbon,
+
+        "storage_impact_gb_hours": storage_impact,
+
         "networking_energy_kwh": networking_energy,
+
+        "networking_carbon_kg": networking_carbon,
+
+        "hardware_energy_kwh": hardware_energy,
+
+        "hardware_carbon_kg": hardware_carbon,
+
+        "retraining_energy_kwh": retraining_energy,
+
+        "retraining_carbon_kg": retraining_carbon,
+
         "total_energy_kwh": total_energy,
+
+        "total_carbon_kg": total_carbon,
     }
 
-
-# ============================================================
-# HARDWARE
-# ============================================================
-
-def calculate_hardware(
-    architecture: Architecture,
-    workload: Workload
-) -> Dict[str, float]:
-
-    _validate_workload(workload)
-
-    retraining_runs = _runs(
-        architecture,
-        workload
-    )
-
-    inference_hours = (
-        workload.inference_count
-        * architecture.estimated_latency_ms
-        / 3_600_000
-    )
-
-    active_hours = (
-        workload.training_hours
-        + retraining_runs
-        * workload.retraining_training_hours
-        + inference_hours
-    )
-
-    lifetime_share = min(
-        1.0,
-        active_hours
-        / (
-            workload.hardware_lifetime_hours
-            * workload.hardware_utilization
-        )
-    )
-
-    # Architecture-specific hardware embodied carbon.
-    #
-    # Based on relative memory / hardware requirement.
-    hardware_base_carbon = {
-        "cpu": 80.0,
-        "small_gpu": 300.0,
-        "large_gpu": 700.0,
-    }
-
-    base_carbon = hardware_base_carbon.get(
-        architecture.hardware_requirement,
-        150.0
-    )
-
-    # Scale modestly with memory requirement.
-    memory_scale = max(
-        1.0,
-        architecture.memory_requirement_mb / 256.0
-    )
-
-    architecture_embodied_carbon = (
-        base_carbon
-        * (0.5 + 0.5 * min(memory_scale, 4.0))
-    )
-
-    embodied_carbon = (
-        architecture_embodied_carbon
-        * lifetime_share
-    )
-
-    return {
-        "active_hardware_hours": active_hours,
-        "hardware_power_watts": (
-            workload.training_power_watts
-        ),
-        "memory_requirement_mb": (
-            architecture.memory_requirement_mb
-        ),
-        "lifetime_share": lifetime_share,
-        "base_hardware_embodied_carbon_kg":
-            architecture_embodied_carbon,
-        "embodied_carbon_kg": embodied_carbon,
-    }
-
-
-# ============================================================
-# CARBON
-# ============================================================
-
-def calculate_carbon(
-    architecture: Architecture,
-    workload: Workload,
-    energy: Optional[Mapping[str, float]] = None
-) -> Dict[str, float]:
-
-    _validate_workload(workload)
-
-    values = (
-        calculate_energy(
-            architecture,
-            workload
-        )
-        if energy is None
-        else energy
-    )
-
-    total_energy = values.get(
-        "total_energy_kwh"
-    )
-
-    if (
-        isinstance(total_energy, bool)
-        or not isinstance(total_energy, (int, float))
-        or not isfinite(total_energy)
-        or total_energy < 0
-    ):
-        raise ValueError(
-            "energy must contain finite, non-negative "
-            "total_energy_kwh."
-        )
-
-    hardware = calculate_hardware(
-        architecture,
-        workload
-    )
-
-    operational_carbon = (
-        total_energy
-        * workload.carbon_intensity_gco2_per_kwh
-        / 1000
-    )
-
-    embodied_carbon = (
-        hardware["embodied_carbon_kg"]
-    )
-
-    return {
-        "operational_carbon_kg": operational_carbon,
-        "embodied_carbon_kg": embodied_carbon,
-        "total_carbon_kg": (
-            operational_carbon
-            + embodied_carbon
-        ),
-        "lifetime_share": hardware["lifetime_share"],
-    }
-
-
-# ============================================================
-# STORAGE
-# ============================================================
-
-def calculate_storage(
-    architecture: Architecture,
-    workload: Workload
-) -> Dict[str, float]:
-
-    _validate_workload(workload)
-
-    model_gb = (
-        architecture.model_size_mb / 1024
-    )
-
-    retraining_runs = _runs(
-        architecture,
-        workload
-    )
-
-    checkpoints = (
-        retraining_runs
-        * workload.checkpoints_per_retraining_run
-    )
-
-    dataset_storage = (
-        workload.dataset_size_gb
-        * workload.replication_factor
-    )
-
-    model_storage = (
-        model_gb
-        * workload.deployment_nodes
-    )
-
-    checkpoint_storage = (
-        model_gb
-        * checkpoints
-    )
-
-    total_storage = (
-        dataset_storage
-        + model_storage
-        + checkpoint_storage
-    )
-
-    return {
-        "dataset_storage_gb": dataset_storage,
-        "model_storage_gb": model_storage,
-        "checkpoint_storage_gb": checkpoint_storage,
-        "number_of_checkpoints": float(checkpoints),
-        "total_storage_gb": total_storage,
-        "storage_duration_years":
-            float(workload.storage_duration_years),
-    }
-
-
-# ============================================================
-# RETRAINING
-# ============================================================
-
-def calculate_retraining(
-    architecture: Architecture,
-    workload: Workload
-) -> Dict[str, float]:
-
-    _validate_workload(workload)
-
-    runs = _runs(
-        architecture,
-        workload
-    )
-
-    energy = calculate_energy(
-        architecture,
-        workload
-    )
-
-    network = calculate_networking(
-        architecture,
-        workload
-    )
-
-    retraining_carbon = (
-        energy["retraining_energy_kwh"]
-        * workload.carbon_intensity_gco2_per_kwh
-        / 1000
-    )
-
-    checkpoint_storage = (
-        architecture.model_size_mb / 1024
-        * runs
-        * workload.checkpoints_per_retraining_run
-    )
-
-    return {
-        "retraining_runs": float(runs),
-        "retraining_energy_kwh":
-            energy["retraining_energy_kwh"],
-        "retraining_carbon_kg":
-            retraining_carbon,
-        "retraining_storage_gb":
-            checkpoint_storage,
-        "retraining_network_gb":
-            network["retraining_dataset_transfer_gb"],
-    }
-
-
-# ============================================================
-# COMPLETE LIFECYCLE
-# ============================================================
-
-def calculate_lifecycle_impact(
-    architecture: Architecture,
-    workload: Workload
-) -> Dict[str, object]:
-
-    if not isinstance(
-        architecture,
-        Architecture
-    ):
-        raise TypeError(
-            "architecture must be an Architecture instance."
-        )
-
-    energy = calculate_energy(
-        architecture,
-        workload
-    )
-
-    carbon = calculate_carbon(
-        architecture,
-        workload,
-        energy
-    )
-
-    storage = calculate_storage(
-        architecture,
-        workload
-    )
-
-    networking = calculate_networking(
-        architecture,
-        workload
-    )
-
-    hardware = calculate_hardware(
-        architecture,
-        workload
-    )
-
-    retraining = calculate_retraining(
-        architecture,
-        workload
-    )
-
-    return {
-        "architecture": architecture.name,
-        "energy": energy,
-        "carbon": carbon,
-        "storage": storage,
-        "networking": networking,
-        "hardware": hardware,
-        "retraining": retraining,
-        "total_lifecycle_carbon_kg":
-            carbon["total_carbon_kg"],
-    }
-
-
-# ============================================================
-# ARCHITECTURE COMPARISON
-# ============================================================
 
 def compare_architectures(
+    architectures,
     workload: Workload,
-    minimum_accuracy: float = 0.0,
-    maximum_latency_ms: Optional[float] = None
-) -> List[Dict[str, object]]:
-
-    if (
-        isinstance(minimum_accuracy, bool)
-        or not isinstance(
-            minimum_accuracy,
-            (int, float)
-        )
-        or not isfinite(minimum_accuracy)
-        or not 0 <= minimum_accuracy <= 1
-    ):
-        raise ValueError(
-            "minimum_accuracy must be finite "
-            "and in [0, 1]."
-        )
-
-    if (
-        maximum_latency_ms is not None
-        and (
-            isinstance(
-                maximum_latency_ms,
-                bool
-            )
-            or not isinstance(
-                maximum_latency_ms,
-                (int, float)
-            )
-            or not isfinite(
-                maximum_latency_ms
-            )
-            or maximum_latency_ms < 0
-        )
-    ):
-        raise ValueError(
-            "maximum_latency_ms must be finite, "
-            "non-negative, or None."
-        )
+    minimum_accuracy: float,
+    maximum_latency: float
+) -> list:
+    """
+    Compare a supplied collection of architectures
+    against accuracy and latency requirements.
+    """
 
     results = []
 
-    for architecture in get_architectures():
+    for architecture in architectures:
 
-        accuracy_ok = (
+        impact = calculate_lifecycle_impact(
+            architecture=architecture,
+            workload=workload
+        )
+
+        accuracy_percent = (
             architecture.estimated_accuracy
-            >= minimum_accuracy
+            * 100.0
         )
 
-        latency_ok = (
-            maximum_latency_ms is None
-            or architecture.estimated_latency_ms
-            <= maximum_latency_ms
+        latency_ms = (
+            architecture.estimated_latency_ms
         )
 
-        results.append(
-            {
-                "architecture": architecture,
-                "feasible":
-                    accuracy_ok and latency_ok,
-                "accuracy_constraint_met":
-                    accuracy_ok,
-                "latency_constraint_met":
-                    latency_ok,
-                "impact":
-                    calculate_lifecycle_impact(
-                        architecture,
-                        workload
-                    ),
-            }
+        eligible = (
+            accuracy_percent >= minimum_accuracy
+            and latency_ms <= maximum_latency
         )
+
+        results.append({
+            "architecture": architecture,
+            "impact": impact,
+            "accuracy": accuracy_percent,
+            "latency": latency_ms,
+            "eligible": eligible,
+        })
 
     return results
